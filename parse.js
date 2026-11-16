@@ -783,6 +783,9 @@ function parseGfmAutolink(src, i, prevChar, openUnderscore) {
 // Inline parsing. inlineStr returns the HTML for an inline span.
 // noEm: when true, emphasis/del delimiters are literal (used for failed
 // link labels, where marked pre-lexes the label without emphasis).
+// inRawLink: set by an unclosed raw <a> tag; while set, GFM autolinks are
+// suppressed (marked's inLink state, doc-03/06). Reset per parse().
+let inRawLink = false;
 // ---------------------------------------------------------------------------
 function isWSChar(c) {
   return c === 32 || c === 9 || c === 10 || c === 13 || c === 11 || c === 12 ||
@@ -946,7 +949,15 @@ function inlineInto(src, refs, out, noEm, noGfm) {
       const al = parseAutolink(src, i);
       if (al) { flush(); out.push(al[0]); i = al[1]; continue; }
       const ih = parseInlineHtml(src, i);
-      if (ih) { flush(); out.push(ih[0]); i = ih[1]; continue; }
+      if (ih) {
+        // an unclosed raw <a> tag suppresses GFM autolinks for the rest
+        // of the document (marked's inLink state): "<a href=foo> text
+        // Callback@x" leaves the email plain until a "</a>" (doc-03/06)
+        const tag = ih[0];
+        if (/^<a(?=[\s>])/i.test(tag) && !/\/>$/.test(tag)) inRawLink = true;
+        else if (/^<\/a(?=[\s>])/i.test(tag)) inRawLink = false;
+        flush(); out.push(ih[0]); i = ih[1]; continue;
+      }
       buf += '<'; i++; continue;
     }
     // image / link
@@ -1102,7 +1113,8 @@ function inlineInto(src, refs, out, noEm, noGfm) {
     // GFM autolink / email (only at a word start). GFM autolinks are
     // suppressed inside a link label (doc-01: a bare URL in a label stays
     // plain text); angle-bracket autolinks still form there (above).
-    if (!noGfm && (c === 119 || c === 104 || c === 102 || isAlphaNum(c))) {
+    // They are also suppressed inside an unclosed raw <a> tag (doc-03/06).
+    if (!noGfm && !inRawLink && (c === 119 || c === 104 || c === 102 || isAlphaNum(c))) {
       const prev = i > 0 ? src.charCodeAt(i - 1) : -1;
       // an unmatched opening "_" delimiter means a trailing "_" after an
       // email may be an emphasis closer, not part of the word (doc-38)
@@ -1812,13 +1824,16 @@ function parseBlocks(lines, refs, tight, inItem) {
       // a trailing newline when the block runs to the end of the input and
       // the input ends with a newline (the last line is the trailing empty
       // string), OR when another block follows directly (no blank line),
-      // OR when the following blank line is whitespace-only but non-empty
-      // (probed: "<pre>\nfoo\n</pre>\n   \nbar" keeps "\n", but
-      // "<pre>\nfoo\n</pre>\n\nbar" drops it — a truly empty line ends
-      // the block without a trailing newline)
+      // OR — for tag-terminated blocks (types 1-5) only — when the
+      // following blank line is whitespace-only but non-empty (probed:
+      // "<pre>\nfoo\n</pre>\n   \nbar" keeps "\n", but
+      // "<pre>\nfoo\n</pre>\n\nbar" drops it). A blank-line-terminated
+      // block (types 6-7, e.g. "<div>") drops the trailing newline on ANY
+      // following blank line ("<div>\n</p>\n\t\nTokens" -> "</p><p>Tokens",
+      // doc-03).
       const runsToEOF = j === n - 1 && lines[j] === '';
       const followedByContent = j < n && !isBlank(lines[j]);
-      const followedByWSBlank = j < n && lines[j] !== '' && isBlank(lines[j]);
+      const followedByWSBlank = hbType <= 5 && j < n && lines[j] !== '' && isBlank(lines[j]);
       html.push(blkLines.join('\n') + ((runsToEOF || followedByContent || followedByWSBlank) ? '\n' : ''));
       i = j;
       continue;
@@ -2200,6 +2215,7 @@ function expandTabs(line) {
 
 function parse(src) {
   src = src.replace(/\r\n?/g, '\n');
+  inRawLink = false; // an unclosed <a> from a previous parse must not leak
   const rawLines = src.split('\n');
   // Expand tabs, except inside fenced code blocks, where tabs are literal
   // content (doc-02: a "\tindented with a tab" fence line keeps its tab).
