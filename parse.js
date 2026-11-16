@@ -857,11 +857,12 @@ function inlineStr(src, refs, noEm) {
 function inlineInto(src, refs, out, noEm) {
   const n = src.length;
   let i = 0;
-  const delims = []; // delimiter records {ch,len,open,close,openTags,closeTags}
+  const delims = []; // delimiter records {ch,len,open,close,openTags,closeTags,pos}
+  let delimSeq = 0; // stable position of each delimiter in the text
   let buf = '';
   const flush = () => { if (buf) { out.push(escText(buf)); buf = ''; } };
   const pushDelim = (ch, len, open, close) => {
-    const rec = { ch, len, open, close, openTags: [], closeTags: [] };
+    const rec = { ch, len, open, close, openTags: [], closeTags: [], pos: delimSeq++ };
     flush();
     out.push(rec);
     delims.push(rec);
@@ -920,8 +921,9 @@ function inlineInto(src, refs, out, noEm) {
         continue;
       }
       let k = labelEnd + 1; // right after ']'
+      // inline links require '(' immediately after ']' — a space between
+      // them means no link (cm-511: "[link] (/uri)" is literal)
       let kParen = k;
-      while (kParen < n && isSpace(src.charCodeAt(kParen))) kParen++; // inline links allow space before '('
       let handled = false;
       let nestedLink = false; // the label contains a link: outer link cannot form
       let fullRefAttempted = false; // '[a][b]' was attempted: no shortcut fallback
@@ -1059,6 +1061,10 @@ function inlineInto(src, refs, out, noEm) {
   }
   flush();
   // ---- emphasis resolution (CommonMark Appendix A, phase 2) ----
+  // spans of already-formed emphasis, as [openerPos, closerPos]; an
+  // opener inside a span cannot pair with a closer outside it (that
+  // would cross an emphasis boundary — cm-469/470)
+  const emSpans = [];
   for (let di = 0; di < delims.length; di++) {
     const closer = delims[di];
     if (!closer.close || closer.len === 0) continue;
@@ -1066,8 +1072,20 @@ function inlineInto(src, refs, out, noEm) {
     while (oi >= 0 && closer.len > 0) {
       const opener = delims[oi];
       if (opener.ch === closer.ch && opener.open && opener.len > 0) {
-        const bothWays = opener.close && closer.open;
-        if (bothWays && (opener.len + closer.len) % 3 === 0 &&
+        // the opener sits inside a formed emphasis but the closer is
+        // outside it: skip this opener (do not cross the boundary)
+        let crossed = false;
+        for (let s = 0; s < emSpans.length; s++) {
+          const sp = emSpans[s];
+          if (sp[0] < opener.pos && opener.pos < sp[1] && closer.pos > sp[1]) { crossed = true; break; }
+        }
+        if (crossed) { oi--; continue; }
+        // odd-match rule (Appendix A rule 9): if EITHER delimiter can
+        // both open and close, the sum of the run lengths must not be a
+        // multiple of 3 unless both are multiples of 3
+        const eitherBoth = (opener.open && opener.close) ||
+                           (closer.open && closer.close);
+        if (eitherBoth && (opener.len + closer.len) % 3 === 0 &&
             (opener.len % 3 !== 0 || closer.len % 3 !== 0)) { oi--; continue; }
         let use;
         if (closer.ch === CC_TILDE) {
@@ -1087,6 +1105,7 @@ function inlineInto(src, refs, out, noEm) {
         closer.closeTags.push(tagClose);
         opener.len -= use;
         closer.len -= use;
+        emSpans.push([opener.pos, closer.pos]);
         if (opener.len === 0) { delims.splice(oi, 1); di--; oi--; continue; }
         // opener still has length: re-check the same opener
         continue;
