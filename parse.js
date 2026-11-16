@@ -1735,8 +1735,11 @@ function parseBlocks(lines, refs, tight) {
         // are stripped (the code-block indent does not apply to a lazy line).
         // Append it to the last paragraph line so it stays paragraph text
         // (a stripped "- bar" must not be re-parsed as a list item, cm-238).
+        // A lazy "===" line is a failed setext underline: indent it 4
+        // spaces so it cannot form a heading when re-parsed (cm-093).
         if (lastPara && !isBlockStart(bl)) {
-          const stripped = lineIndent(bl).col >= 4 ? stripIndent(bl, 4) : bl;
+          let stripped = lineIndent(bl).col >= 4 ? stripIndent(bl, 4) : bl;
+          if (/^ {0,3}=+[ \t]*$/.test(stripped)) stripped = '    ' + stripped.trimStart();
           if (bqLines.length > 0) bqLines[bqLines.length - 1] += '\n' + stripped;
           else bqLines.push(stripped);
           j++; continue;
