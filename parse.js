@@ -282,7 +282,7 @@ function parseLinkTarget(text, i, br, ctx) {
         d += text[k];
         k++;
       }
-      if (!ok || d === '') return null;
+      if (!ok) return null;
       dest = d;
       j = k + 1;
     } else {
@@ -302,7 +302,9 @@ function parseLinkTarget(text, i, br, ctx) {
         d += text[k];
         k++;
       }
-      if (d === '') return null;
+      // an empty destination is valid: `[link]()` and `[link](<>)`
+      // both link to "" (cm-485/486); the closing-paren check below
+      // still validates the overall shape
       dest = d;
       j = k;
     }
@@ -1407,6 +1409,10 @@ function parseBlocks(lines, ctx, opts) {
       const rd = parseRefDef(lines.map((l) => l.text), i);
       if (rd) {
         if (!ctx.refs.has(rd.label)) ctx.refs.set(rd.label, { href: rd.href, title: rd.title });
+        // a ref def is a block: a blank line before it makes the
+        // container loose (cm-317: ref def between list items)
+        if (sawBlank && blocks.length > 0) loose = true;
+        sawBlank = false;
         i += rd.consumed;
         continue;
       }
@@ -1470,9 +1476,10 @@ function parseBlocks(lines, ctx, opts) {
             content.push(ct);
             i++;
           }
-          // a fenced code block drops exactly one trailing blank line
-          // (probed: `a\n\n\n` -> `a\n\n`, `a\n\n` -> `a\n`)
-          if (content.length && /^[ \t]*$/.test(content[content.length - 1])) content.pop();
+          // a fenced code block drops exactly one trailing blank line,
+          // but only a truly empty line — a whitespace-only line is
+          // content and is kept (probed cm-129: `  ` stays)
+          if (content.length && content[content.length - 1] === '') content.pop();
           addBlock({ kind: 'fence', text: content.join('\n') + (content.length ? '\n' : ''), info });
           continue;
         }
@@ -1662,6 +1669,10 @@ function parseBlocks(lines, ctx, opts) {
             }
             const cm = listMarker(ct);
             if (sameLevel(cm)) break;
+            // a list marker of a different type/delimiter at this level
+            // (not nested) ends the item AND the list — the outer level
+            // starts a new list there (cm-302: `3)` after `1.`/`2.`)
+            if (cm && cm.leadCols < contentIndent) break;
             const stripped = stripColumns(ct, contentIndent);
             if (stripped !== null) { sub.push({ text: stripped, lazy: false }); j++; continue; }
             // lazy line
