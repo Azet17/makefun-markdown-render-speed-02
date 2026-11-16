@@ -568,7 +568,20 @@ function tryAutolink(text, i, prev, ctx) {
   // autolink after a literal '<' still forms)
   if (!(prev === -1 || prev === 32 || prev === 9 || prev === 10 || prev === 42 || prev === 95 || prev === 126 || prev === 40 || prev === 60)) return null;
   if (ctx.inLink.v) return null;
-  for (let b = 0; b < ctx.brackets.length; b++) if (ctx.brackets[b].active) return null;
+  // autolinks are suppressed inside a link label — but only while that
+  // label could still become a link. If the innermost active bracket's
+  // label already contains a formed bracket link, the outer link can
+  // never form (containsLink), so autolinks inside it ARE recognized
+  // (probed doc-08: nested `[a [b](#to)](u)` autolinks the `u`).
+  for (let b = ctx.brackets.length - 1; b >= 0; b--) {
+    const br = ctx.brackets[b];
+    if (!br.active) continue;
+    if (ctx.parts) {
+      const oi = ctx.parts.indexOf(br.node);
+      if (oi >= 0 && containsLink(ctx.parts.slice(oi + 1))) continue;
+    }
+    return null;
+  }
   const rest = text.slice(i);
   let m;
   // www. (indices are absolute into text, starting at i + 4)
@@ -913,6 +926,7 @@ function inlineParse(text, ctx) {
       if (tryIt) {
         ctx.brackets = brackets;
         ctx.delims = delims;
+        ctx.parts = parts;
         const prev = i > 0 ? text.charCodeAt(i - 1) : -1;
         const al = tryAutolink(text, i, prev, ctx);
         if (al) {
