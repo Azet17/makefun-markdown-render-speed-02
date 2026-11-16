@@ -930,6 +930,18 @@ function stripCodeIndent(line, cols) {
   return prefix + line.slice(i);
 }
 
+// Fenced-code variant: strip up to N leading whitespace CHARACTERS
+// (a space or a tab counts as 1 each), stopping at the first
+// non-whitespace character. Probed: N=2, `\t\ta` -> `a` (2 tabs),
+// N=1, `\t\ta` -> `\ta` (1 tab), N=2, `\t a` -> `a`, N=3,
+// `    a` -> ` a`. A line with less indent than the fence loses all
+// of its leading whitespace (the loop stops at non-whitespace).
+function stripFenceIndent(line, cols) {
+  let i = 0;
+  while (i < cols && i < line.length && (line.charCodeAt(i) === 32 || line.charCodeAt(i) === 9)) i++;
+  return line.slice(i);
+}
+
 function stripBlockquote(line) {
   // If the line starts a blockquote marker (<=3 leading spaces + '>'),
   // return the content line. Else null.
@@ -1557,10 +1569,10 @@ function parseBlocks(lines, ctx, opts) {
             }
             let ct = lt;
             {
-              const stripped = stripCodeIndent(lt, cols);
-              // a content line with less indent than the fence loses all of
-              // its leading whitespace
-              ct = stripped !== null ? stripped : lt.slice(lineIndent(lt).index);
+              // fenced code strips up to the fence indent in whitespace
+              // characters (a tab counts as 1); a line with less indent
+              // loses all of its leading whitespace
+              ct = stripFenceIndent(lt, cols);
             }
             content.push(ct);
             i++;
