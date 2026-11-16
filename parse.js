@@ -1524,9 +1524,19 @@ function parseBlocks(lines, ctx, opts) {
           while (i < n) {
             const lobj = lines[i];
             const lt = lobj.text;
-            // a lazy line cannot be fence content: it ends the fence (and
-            // the container); the line is left for the outer level
-            if (lobj.lazy) break;
+            // a lazy line ends the fence only while the fence is still
+            // EMPTY (no content yet) — once the fence has a non-lazy
+            // content line, lazy lines are fence content (probed: list
+            // `- ```css\n  a\nb\n  ``` ` keeps `b`; list2 `- ```\nfoo\n`
+            // is an empty fence, `foo` exits the list; cm-237 blockquote
+            // `> ```\nfoo` is an empty fence, `foo` exits the quote)
+            // a lazy line ends the fence while it is still EMPTY, or
+            // when the fence is NOT inside a list item. Inside a list
+            // item, a lazy line after the fence already has content IS
+            // fence content (probed `- ```css\n  a\nb\n` keeps `b`); in a
+            // blockquote or at top level a lazy line ends the fence even
+            // with content (doc-01/03/14/34)
+            if (lobj.lazy && (content.length === 0 || !opts.inList)) break;
             {
               const li = lineIndent(lt);
               if (li.cols <= 3) {
@@ -1752,7 +1762,7 @@ function parseBlocks(lines, ctx, opts) {
             sub.push({ text: ct, lazy: true });
             j++;
           }
-          const res = parseBlocks(sub, ctx, { strip4: true });
+          const res = parseBlocks(sub, ctx, { strip4: true, inList: true });
           items.push(res.blocks);
           if (res.loose) loose = true;
           // if the inner parse stopped early (a lazy line that could not
