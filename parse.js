@@ -1411,6 +1411,21 @@ function parseBlocks(lines, ctx, opts) {
   }
 
   // Can this line interrupt a paragraph? (checked on the container-stripped line)
+  // Does this line start a new block (list, heading, hr, fence, HTML
+  // block)? Used to end a table body: any block start ends the table.
+  function startsBlock(text) {
+    const { cols, index } = lineIndent(text);
+    if (cols > 3) return false;
+    const s = text.slice(index);
+    if (/^#{1,6}(\s|$)/.test(s)) return true;
+    const fm = /^(`{3,}|~{3,})(.*)$/.exec(s);
+    if (fm && !(fm[1].charAt(0) === '`' && fm[2].includes('`'))) return true;
+    if (isHrLine(text)) return true;
+    if (htmlBlockStart(text)) return true;
+    if (listMarker(text)) return true;
+    return false;
+  }
+
   function interruptsPara(text) {
     const { cols, index } = lineIndent(text);
     if (cols > 3) return false;
@@ -1545,8 +1560,10 @@ function parseBlocks(lines, ctx, opts) {
           // different block (a `> ` blockquote ends the table, gfm-201);
           // a row without a pipe is a single cell, padded (gfm-202). A
           // line of ONLY tabs is an empty row (probed); a spaces-only or
-          // truly empty line ends the table.
-          while (i < n && (!isBlank(lines[i].text) || /^\t+$/.test(lines[i].text)) && !lines[i].lazy && stripBlockquote(lines[i].text) === null) {
+          // truly empty line ends the table. A line starting a list,
+          // heading, hr or fence also ends the table (doc-07: `* Lexer`
+          // after a table is a list item, not a row).
+          while (i < n && (!isBlank(lines[i].text) || /^\t+$/.test(lines[i].text)) && !lines[i].lazy && stripBlockquote(lines[i].text) === null && !startsBlock(lines[i].text)) {
             if (/^\t+$/.test(lines[i].text)) {
               rows.push(new Array(header.length).fill(''));
               i++;
