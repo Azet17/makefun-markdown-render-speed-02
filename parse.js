@@ -1040,8 +1040,9 @@ function htmlBlockStart(line) {
   // type 7: any complete open/close tag that is not a void element,
   // ALONE on the line (followed only by whitespace). The tag must have
   // VALID attributes (spec regex) — `<a h*#ref="hi">` and
-  // `<a href='bar'title=title>` are not tags (cm-619/622).
-  m = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>/.exec(s);
+  // `<a href='bar'title=title>` are not tags (cm-619/622) — and a close
+  // tag has NO attributes (`</a href="foo">` is not a tag, cm-624).
+  m = /^<\/[A-Za-z][A-Za-z0-9-]*\s*>/.exec(s) || /^<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>/.exec(s);
   if (m && s.slice(m[0].length).trim() === '') {
     const name = s.slice(1).replace(/^\//, '').match(/^[A-Za-z][A-Za-z0-9-]*/)[0].toLowerCase();
     if (!VOID_ELEMENTS.has(name)) return { type: 7, endRe: null };
@@ -1057,7 +1058,7 @@ function parseHtmlTag(text, i) {
   // HTML tags MAY span newlines (cm-615: `<b2\ndata="foo" >` is a tag).
   // The `<a` suppression rule is about a literal SPACE after `<a`, not
   // about newlines.
-  let m = /^<!--(?:(?!-->)[\s\S])*?-->/.exec(rest);
+  let m = /^<!-->|^<!--->|^<!--(?:(?!-->)[\s\S])*?-->/.exec(rest);
   if (m) return { raw: m[0], end: i + m[0].length };
   m = /^<\?(?:(?!\?>)[\s\S])*?\?>/.exec(rest);
   if (m) return { raw: m[0], end: i + m[0].length };
@@ -1065,13 +1066,14 @@ function parseHtmlTag(text, i) {
   if (m) return { raw: m[0], end: i + m[0].length };
   m = /^<!\[CDATA\[(?:(?!\]\]>)[\s\S])*?\]\]>/.exec(rest);
   if (m) return { raw: m[0], end: i + m[0].length };
-  // open / close tag — CommonMark spec regex: attribute names are
-  // [A-Za-z_:][A-Za-z0-9_.:-]*, values are unquoted (no space " ' = < >
-  // `), single-quoted, or double-quoted, and a quoted value may contain
-  // `>` (so `<em>` inside an attribute does not end the tag). This
-  // rejects `<a h*#ref="hi">`, `<a href="hi'>`, `<foo bim!bop />`,
-  // `<a href='bar'title=title>` while accepting quoted `>` (cm-616/619-622).
-  m = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>/.exec(rest);
+  // open / close tag — CommonMark spec regex. A CLOSE tag has NO
+  // attributes (`</a href="foo">` is not a tag, cm-624); an open tag's
+  // attribute names are [A-Za-z_:][A-Za-z0-9_.:-]*, values are unquoted
+  // (no space " ' = < > `), single-quoted, or double-quoted, and a
+  // quoted value may contain `>` (cm-616/619-622).
+  m = /^<\/[A-Za-z][A-Za-z0-9-]*\s*>/.exec(rest);
+  if (m) return { raw: m[0], end: i + m[0].length };
+  m = /^<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>/.exec(rest);
   if (m) {
     return { raw: m[0], end: i + m[0].length };
   }
@@ -1437,9 +1439,10 @@ function parseBlocks(lines, ctx, opts) {
           const header = headerCells;
           const rows = [];
           i++;
-          // a body row must contain a pipe; a line without one (e.g. a
-          // blockquote `> bar`) ends the table (gfm-201)
-          while (i < n && !isBlank(lines[i].text) && !lines[i].lazy && lines[i].text.includes('|')) {
+          // a body row is any non-blank line that does not start a
+          // different block (a `> ` blockquote ends the table, gfm-201);
+          // a row without a pipe is a single cell, padded (gfm-202)
+          while (i < n && !isBlank(lines[i].text) && !lines[i].lazy && stripBlockquote(lines[i].text) === null) {
             const rc = splitRow(lines[i].text);
             while (rc.length < header.length) rc.push('');
             rows.push(rc.slice(0, header.length));
