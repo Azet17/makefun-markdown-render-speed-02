@@ -158,6 +158,16 @@ function normalizeLabel(s) {
   return unescapeStr(s).replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+// Does a parts list contain a link node (t=4) anywhere, recursing into
+// emphasis/strong/del children? A link label may not contain a link.
+function containsLink(parts) {
+  for (const p of parts) {
+    if (p.t === 4) return true;
+    if ((p.t === 1 || p.t === 2 || p.t === 3) && p.c && containsLink(p.c)) return true;
+  }
+  return false;
+}
+
 // ---------- inline parsing ----------
 // Node types: 0 text {s}, 1 em {c}, 2 strong {c}, 3 del {c}, 4 link {href,title,c},
 // 5 image {src,alt,title}, 6 code {s}, 7 html {s}, 8 br
@@ -676,6 +686,15 @@ function inlineParse(text, ctx) {
       processEmphasis(parts, delims, brackets, br.node);
       const oi = parts.indexOf(br.node);
       const children = parts.slice(oi + 1);
+      // a link label may not contain a link: if it does, do not form this
+      // link — the ']' is literal and the bracket is dropped (a later
+      // shortcut reference like [options-20] can still form on its own)
+      if (!br.img && containsLink(children)) {
+        br.active = false;
+        cur += ']';
+        i++;
+        continue;
+      }
       const inside = new Set(children);
       for (let d = 0; d < delims.length; d++) {
         const e = delims[d];
@@ -1445,15 +1464,9 @@ function parseBlocks(lines, ctx, opts) {
         const lobj = lines[j];
         const lt = lobj.text;
         if (isBlank(lt)) {
-          // a blank line belongs to the blockquote only if the next
-          // non-blank line is blockquote-prefixed; otherwise it ends it
-          let k = j + 1;
-          while (k < n && isBlank(lines[k].text)) k++;
-          if (k < n && stripBlockquote(lines[k].text) !== null) {
-            sub.push({ text: '', lazy: false });
-            j++;
-            continue;
-          }
+          // a truly-blank line (no '>') ENDS the blockquote; a following
+          // '>' line starts a NEW blockquote (probed). Only a '>'-prefixed
+          // blank line (handled by stripBlockquote below) continues it.
           break;
         }
         const stripped = stripBlockquote(lt);
