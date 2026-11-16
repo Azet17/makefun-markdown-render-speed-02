@@ -1739,6 +1739,9 @@ function parseBlocks(lines, refs, tight, inItem) {
       const bqLines = [];
       let lastPara = false;
       let j = i;
+      let bqFence = null; // {char, len} while a fenced block is open inside
+      // this blockquote — a lazy line (no ">") cannot continue a fence
+      // (doc-01: ">```python" ... "used foo" ends the fence + blockquote)
       while (j < n) {
         const bl = lines[j];
         const bm = /^ {0,3}> ?/.exec(bl);
@@ -1752,6 +1755,10 @@ function parseBlocks(lines, refs, tight, inItem) {
           let im;
           while ((im = /^ {0,3}> ?/.exec(inner))) inner = inner.slice(im[0].length);
           lastPara = endsOpenPara(inner);
+          // track fences in the blockquote content (after stripping ">")
+          const fm = fenceMatch(inner);
+          if (fm && !bqFence) bqFence = { char: fm.char, len: fm.len };
+          else if (fm && bqFence && fm.char === bqFence.char && fm.len >= bqFence.len && fm.info.trim() === '') bqFence = null;
           j++; continue;
         }
         if (isBlank(bl)) break;
@@ -1761,6 +1768,9 @@ function parseBlocks(lines, refs, tight, inItem) {
         // (a stripped "- bar" must not be re-parsed as a list item, cm-238).
         // A lazy "===" line is a failed setext underline: indent it 4
         // spaces so it cannot form a heading when re-parsed (cm-093).
+        // A lazy line cannot continue a fenced code block: it ends the
+        // blockquote (and the fence) instead (doc-01).
+        if (bqFence) break;
         if (lastPara && !isBlockStart(bl)) {
           let stripped = lineIndent(bl).col >= 4 ? stripIndent(bl, 4) : bl;
           if (/^ {0,3}=+[ \t]*$/.test(stripped)) stripped = '    ' + stripped.trimStart();
