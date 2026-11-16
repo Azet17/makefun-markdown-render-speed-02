@@ -174,6 +174,39 @@ function containsLink(parts) {
   return false;
 }
 
+// Does the label text contain a code span whose content includes a
+// backtick AND that is not the last thing in the label (non-whitespace
+// follows it before the `]`)? Probed: `[x `` a ` b ``]` forms (code
+// span is last), but `[x `` a ` b `` y]`, `[x `` a ` b ``_]` and
+// `[but _prev `` a ` b ``_]` do not form (text/`_` follows the span).
+// The code span still renders and the URL is autolinked.
+function backtickCodeSpanBlocksLink(label) {
+  let idx = 0;
+  const n = label.length;
+  while (idx < n) {
+    if (label.charCodeAt(idx) !== 96) { idx++; continue; }
+    let j = idx;
+    while (j < n && label.charCodeAt(j) === 96) j++;
+    const m = j - idx;
+    let close = -1;
+    let k = j;
+    while (k < n) {
+      if (label.charCodeAt(k) === 96) {
+        let e = k;
+        while (e < n && label.charCodeAt(e) === 96) e++;
+        if (e - k === m) { close = k; break; }
+        k = e;
+      } else k++;
+    }
+    if (close === -1) return false;
+    if (label.slice(j, close).includes('`')) {
+      if (label.slice(close + m).trim() !== '') return true;
+    }
+    idx = close + m;
+  }
+  return false;
+}
+
 // ---------- inline parsing ----------
 // Node types: 0 text {s}, 1 em {c}, 2 strong {c}, 3 del {c}, 4 link {href,title,c},
 // 5 image {src,alt,title}, 6 code {s}, 7 html {s}, 8 br
@@ -768,8 +801,6 @@ function inlineParse(text, ctx) {
         }
       }
       if (!res) { br.active = false; cur += ']'; i++; continue; }
-      // resolve emphasis inside the label first (bottom = the '[' node)
-      processEmphasis(parts, delims, brackets, br.node);
       const oi = parts.indexOf(br.node);
       const children = parts.slice(oi + 1);
       // a link label may not contain a link: if it does, do not form this
@@ -781,7 +812,27 @@ function inlineParse(text, ctx) {
         i++;
         continue;
       }
-      const inside = new Set(children);
+      // a link label may not contain a code span whose content includes
+      // a backtick unless the span is the last thing in the label:
+      // same treatment (the code span still renders), and the emphasis
+      // delimiters inside the label are deactivated so
+      // `_previous from ... _` stays literal too. These checks run
+      // BEFORE processEmphasis, or the <em> would already be formed.
+      if (!br.img && backtickCodeSpanBlocksLink(text.slice(br.src + 1, i))) {
+        const inside = new Set(children);
+        for (let d = 0; d < delims.length; d++) {
+          const e = delims[d];
+          if (e.active && inside.has(e.node)) e.active = false;
+        }
+        br.active = false;
+        cur += ']';
+        i++;
+        continue;
+      }
+      // resolve emphasis inside the label first (bottom = the '[' node)
+      processEmphasis(parts, delims, brackets, br.node);
+      const children2 = parts.slice(parts.indexOf(br.node) + 1);
+      const inside = new Set(children2);
       for (let d = 0; d < delims.length; d++) {
         const e = delims[d];
         if (e.active && inside.has(e.node)) e.active = false;
@@ -793,10 +844,10 @@ function inlineParse(text, ctx) {
       br.active = false;
       parts.splice(oi, parts.length - oi);
       if (br.img) {
-        const alt = plainText(children);
+        const alt = plainText(children2);
         parts.push({ t: 5, src: cleanUrl(res.href), alt, title: res.title == null ? null : escInlineText(res.title) });
       } else {
-        parts.push({ t: 4, href: cleanUrl(res.href), title: res.title == null ? null : escInlineText(res.title), c: children });
+        parts.push({ t: 4, href: cleanUrl(res.href), title: res.title == null ? null : escInlineText(res.title), c: children2 });
       }
       i = res.end;
       continue;
