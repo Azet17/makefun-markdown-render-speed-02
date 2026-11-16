@@ -623,11 +623,13 @@ function trimGfmEnd(s) {
       }
       if (t >= 0 && s.charCodeAt(t) === 38 && t < end - 1) { end = t; changed = true; }
     }
-    // trailing punctuation: . , ; : ! ? ) ] } ' "
+    // trailing punctuation: . , ; : ! ? ) ] } ' " * _ ~
+    // (* _ ~ are emphasis/del markers — a URL ending in them must give
+    // them back so the emphasis can form, e.g. "__x https://u__" doc-02)
     while (end > 0) {
       const c = s.charCodeAt(end - 1);
       if (c === 63 || c === 33 || c === 46 || c === 44 || c === 59 || c === 58 ||
-          c === 34 || c === 39) { end--; changed = true; continue; }
+          c === 34 || c === 39 || c === 42 || c === 95 || c === 126) { end--; changed = true; continue; }
       if (c === 41) {
         let depth = 0;
         for (let t = 0; t < end; t++) {
@@ -1581,10 +1583,14 @@ function parseTitleOnly(s) {
 }
 
 // ---------------------------------------------------------------------------
-// parseBlocks(lines, refs, tight): renders a list of lines to HTML.
+// parseBlocks(lines, refs, tight, inItem): renders a list of lines to HTML.
 // tight: paragraphs at this level render without <p> tags (tight list items).
+// inItem: true when parsing a list item's direct content — inside an item,
+//   an ordered list may interrupt the item's paragraph regardless of its
+//   start number (probed: "- Issue.\n  2. x" forms <ol start="2">, while
+//   top-level and blockquote paragraphs need start 1 to be interrupted).
 // ---------------------------------------------------------------------------
-function parseBlocks(lines, refs, tight) {
+function parseBlocks(lines, refs, tight, inItem) {
   const html = [];
   let i = 0;
   const n = lines.length;
@@ -1764,14 +1770,14 @@ function parseBlocks(lines, refs, tight) {
         }
         break;
       }
-      html.push('<blockquote>\n' + parseBlocks(bqLines, refs, false) + '</blockquote>\n');
+      html.push('<blockquote>\n' + parseBlocks(bqLines, refs, false, false) + '</blockquote>\n');
       i = j;
       continue;
     }
 
     // --- list ---
     const li = listItemMatch(line);
-    if (li && (!para || li.type === 'bullet' || li.start === 1) && !(para && li.content === '')) {
+    if (li && (!para || li.type === 'bullet' || li.start === 1 || inItem) && !(para && li.content === '')) {
       const lst = parseList(lines, i, refs);
       if (lst) { flushPara(); html.push(lst.html); i = lst.next; continue; }
     }
@@ -2014,7 +2020,7 @@ function parseList(lines, i, refs) {
     out += '<ul>\n';
   }
   for (const item of items) {
-    let content = parseBlocks(item.lines, refs, !loose);
+    let content = parseBlocks(item.lines, refs, !loose, true);
     if (item.task) {
       const cb = '<input ' + (item.task === 'checked' ? 'checked="" ' : '') + 'disabled="" type="checkbox">';
       if (content === '') content = cb;
@@ -2042,14 +2048,17 @@ function expandTabs(line) {
   // the whitespace after a blockquote / list / heading marker). A tab in the
   // content stays a literal tab (indented code and paragraphs keep it).
   // Tab stops are every 4 columns, counted from the line start.
+  // A tab immediately after exactly 4 leading spaces is code content
+  // (doc-02/doc-05: "    \tindented" keeps the tab); every other tab in
+  // the prefix is expanded (cm-005 "\t\tbar" needs both tabs expanded).
   let out = '', col = 0, i = 0;
   let inPrefix = true;
   const n = line.length;
   while (i < n) {
     const c = line.charCodeAt(i);
     if (c === 9) { // tab
-      if (inPrefix) { const w = 4 - (col % 4); out += ' '.repeat(w); col += w; }
-      else out += '\t';
+      if (inPrefix && !(i === 4 && line.startsWith('    '))) { const w = 4 - (col % 4); out += ' '.repeat(w); col += w; }
+      else { out += '\t'; if (i === 4 && line.startsWith('    ')) inPrefix = false; }
       i++;
       continue;
     }
@@ -2102,7 +2111,7 @@ function parse(src) {
   }
   const refs = new Map();
   collectRefs(lines, refs);
-  return parseBlocks(lines, refs, false);
+  return parseBlocks(lines, refs, false, false);
 }
 
 // first pass: collect reference definitions document-wide (top level and
