@@ -1632,9 +1632,9 @@ function parseBlocks(lines, refs, tight) {
         codeLines.push(stripIndent(cl, ind.col));
         j++;
       }
-      // drop trailing blank lines (a trailing empty string from the final
-      // newline is an artifact, not content)
-      while (codeLines.length && /^[ \t]*$/.test(codeLines[codeLines.length - 1])) codeLines.pop();
+      // drop trailing blank lines — but only truly empty ones; a line
+      // holding spaces is content (cm-129: "```\n\n  \n```" keeps "\n  \n")
+      while (codeLines.length && codeLines[codeLines.length - 1] === '') codeLines.pop();
       const content = codeLines.length ? codeLines.join('\n') + '\n' : '';
       // the language is the info string's first word, with backslash
       // escapes decoded; entities in it are preserved, not re-escaped
@@ -1930,7 +1930,9 @@ function parseList(lines, i, refs) {
               lineIndent(lines[k]).col > cur.contentIndent))) {
           loose = true;
         }
-        cur.lines.push('');
+        // push one blank line per blank line seen (cm-264: two blank lines
+        // inside an indented code block stay two blank lines)
+        for (let b = j; b < k; b++) cur.lines.push('');
         j = k;
         continue;
       }
