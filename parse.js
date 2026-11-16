@@ -390,7 +390,20 @@ function processEmphasis(parts, delims, brackets, bottomNode) {
           found = op; break;
         }
         const odd = closer.open && o.close && ((o.len + closer.len) % 3 === 0) && (o.len % 3 !== 0 || closer.len % 3 !== 0);
-        if (!odd) { found = op; break; }
+        if (odd) { op--; continue; }
+        // Blocking rule (probed): the inner closer IMMEDIATELY before this
+        // closer, which could also open and whose run length + this
+        // opener's length is a multiple of 3, blocks the match — e.g.
+        // `*a **b**c*` leaves the outer `*` literal (2+1=3), while
+        // `*a *b*c*` (1+1=2), `*a **b** c*` (inner closer cannot open)
+        // and `*a **b**c** d*` (another delimiter intervenes) all form it.
+        let blocked = false;
+        if (cur - 1 > op) {
+          const e = delims[cur - 1];
+          if (e.wasCloser && e.ch === closer.ch && e.matchOpen && ((e.matchLen + o.len) % 3 === 0)) blocked = true;
+        }
+        if (blocked) { op--; continue; }
+        found = op; break;
       }
       op--;
     }
@@ -399,6 +412,8 @@ function processEmphasis(parts, delims, brackets, bottomNode) {
     const use = closer.ch === '~' ? closer.len : (opener.len >= 2 && closer.len >= 2 ? 2 : 1);
     const oi = parts.indexOf(opener.node);
     const ci = parts.indexOf(closer.node);
+    // record that this closer was used (for the blocking rule above)
+    closer.wasCloser = true; closer.matchLen = closer.len; closer.matchOpen = closer.open;
     // trim the delimiter runs: opener loses `use` chars from its end,
     // closer loses `use` chars from its start
     opener.node.s = opener.node.s.slice(0, opener.node.s.length - use);
