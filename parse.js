@@ -513,14 +513,19 @@ function trimAutolink(s) {
   }
   while (s.length > 0) {
     const last = s.charCodeAt(s.length - 1);
-    // (a) unmatched trailing ')'
+    // (a) unmatched trailing ')': the trailing ')' has no matching '('
+    // if, scanning all but the last char, the paren depth is 0 just
+    // before it (a stack check, not total counts — probed:
+    // `https://a.com)](./c.md)` keeps its trailing ')' because the
+    // '(' before `./c.md` matches it, even though total ')' > '(')
     if (last === 41) {
-      let open = 0, close = 0;
-      for (let i = 0; i < s.length; i++) {
-        if (s.charCodeAt(i) === 40) open++;
-        else if (s.charCodeAt(i) === 41) close++;
+      let dep = 0;
+      for (let i = 0; i < s.length - 1; i++) {
+        const c = s.charCodeAt(i);
+        if (c === 40) dep++;
+        else if (c === 41 && dep > 0) dep--;
       }
-      if (close > open) { s = s.slice(0, -1); continue; }
+      if (dep === 0) { s = s.slice(0, -1); continue; }
       // (b) final ')' closes a '(' that itself contains a '('
       let depth = 0;
       let matchIdx = -1;
@@ -619,15 +624,12 @@ function tryAutolink(text, i, prev, ctx) {
   if (m) {
     let link = trimAutolink(m[0]);
     if (link.length === 0) return null;
-    // host: from after '://' up to the first / ? #
+    // host: from after '://' up to the first char that is not a valid
+    // host char (a ')' or ']' ends it — probed: `https://b.com)]`
+    // autolinks with host `b.com`, the `)]` staying in the link)
     const schemeEnd = link.indexOf('://') + 3;
-    let hEnd = link.length;
-    for (let k = schemeEnd; k < link.length; k++) {
-      const ch = link[k];
-      if (ch === '/' || ch === '?' || ch === '#') { hEnd = k; break; }
-    }
-    const host = link.slice(schemeEnd, hEnd);
-    if (host.length === 0 || !/^[A-Za-z0-9._~%:@\-]+$/.test(host)) return null;
+    const hm = /^[A-Za-z0-9._~%:@\-]+/.exec(link.slice(schemeEnd));
+    if (!hm || hm[0].length === 0) return null;
     return { text: link, href: link, end: i + link.length };
   }
   // mailto: — capture just the address (the regex stops at trailing junk
