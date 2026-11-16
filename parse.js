@@ -1124,6 +1124,20 @@ function inlineInto(src, refs, out, noEm, noGfm) {
     while (oi >= 0 && closer.len > 0) {
       const opener = delims[oi];
       if (opener.ch === closer.ch && opener.open && opener.len > 0) {
+        // A single-delimiter closer must not steal a two-delimiter
+        // opener that a later closer of the same char needs for strong:
+        // "**public as *so*other* option html**" — the "*" after
+        // "other" must stay literal so the trailing "**" forms strong
+        // with the opening "**" (doc-01). But a "***" opener (len 3)
+        // may give one delimiter to a single closer and still leave two
+        // for a later strong (cm-430 "***foo* bar**").
+        if (closer.len === 1 && opener.len === 2) {
+          let laterStrong = false;
+          for (let k = di + 1; k < delims.length; k++) {
+            if (delims[k].ch === closer.ch && delims[k].close && delims[k].len >= 2) { laterStrong = true; break; }
+          }
+          if (laterStrong) { oi--; continue; }
+        }
         // the opener sits inside a formed emphasis but the closer is
         // outside it: skip this opener (do not cross the boundary)
         let crossed = false;
