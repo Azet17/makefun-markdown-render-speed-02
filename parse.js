@@ -477,7 +477,12 @@ function splitCells(line) {
   let cur = '', i = start;
   while (i < end) {
     const ch = s.charCodeAt(i);
-    if (ch === 92 && i + 1 < end && s.charCodeAt(i + 1) === 124) { cur += '\\|'; i += 2; continue; }
+    if (ch === 92 && i + 1 < end) {
+      const nx = s.charCodeAt(i + 1);
+      if (nx === 124) { cur += '|'; i += 2; continue; } // \| -> | (escaped pipe, no split)
+      if (nx === 92) { cur += '\\\\'; i += 2; continue; } // \\ stays (literal backslash)
+      cur += s[i]; i++; continue;
+    }
     if (ch === 124) { cells.push(cur.trim()); cur = ''; i++; continue; }
     cur += s[i]; i++;
   }
@@ -587,8 +592,10 @@ function lexBlocks(lines, links, top, srcEndsNL) {
         if (header && header.length === aligns.length) {
           const rows = [];
           let j = i + 2;
-          while (j < n && !isBlankL(lines[j]) && lines[j].s.indexOf('|') >= 0) {
+          // a body row is any non-blank line (it need not contain a |, gfm-202)
+          while (j < n && !isBlankL(lines[j])) {
             const cells = splitCells(lines[j]);
+            if (!cells) break;
             while (cells.length < header.length) cells.push('');
             rows.push(cells.slice(0, header.length));
             j++;
@@ -790,16 +797,20 @@ function renderBlocks(nodes, links) {
           const a = n.aligns[k];
           out += '<th' + (a ? ' align="' + a + '"' : '') + '>' + inline(n.header[k], links) + '</th>\n';
         }
-        out += '</tr>\n</thead>\n<tbody>';
-        for (const row of n.rows) {
-          out += '<tr>\n';
-          for (let k = 0; k < row.length; k++) {
-            const a = n.aligns[k];
-            out += '<td' + (a ? ' align="' + a + '"' : '') + '>' + inline(row[k], links) + '</td>\n';
+        out += '</tr>\n</thead>\n';
+        if (n.rows.length > 0) {
+          out += '<tbody>';
+          for (const row of n.rows) {
+            out += '<tr>\n';
+            for (let k = 0; k < row.length; k++) {
+              const a = n.aligns[k];
+              out += '<td' + (a ? ' align="' + a + '"' : '') + '>' + inline(row[k], links) + '</td>\n';
+            }
+            out += '</tr>\n';
           }
-          out += '</tr>\n';
+          out += '</tbody>';
         }
-        out += '</tbody></table>\n';
+        out += '</table>\n';
         break;
       }
     }
@@ -1011,12 +1022,22 @@ function plainText(nodes) {
 
 // GFM bare URL / email starting at i (only when not inside a link label).
 // Returns {href, text, end, email} or null.
+const EMAIL_PART = '[A-Za-z0-9._+-]+@[a-zA-Z0-9-_]+(?:\\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![\\w-])';
+const EMAIL_RE = new RegExp('^' + EMAIL_PART);
+const EMAIL_PROTO_RE = new RegExp('^(?:mailto:' + EMAIL_PART + '|xmpp:' + EMAIL_PART + '(?:\\/[A-Za-z0-9@.]+)?)');
 function matchGfmUrl(s, i, n) {
   const rest = s.slice(i);
-  let m = /^www\.[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*[^\s<]*/.exec(rest);
+  // mailto: / xmpp: + email (xmpp may carry one /resource segment)
+  let m = EMAIL_PROTO_RE.exec(rest);
+  if (m) {
+    let url = backpedalUrl(m[0]);
+    if (url.length === 0) return null;
+    return { href: url, text: url, end: i + url.length, email: false };
+  }
+  m = /^www\.[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*[^\s<]*/.exec(rest);
   let isWww = true;
   if (!m) {
-    m = /^(?:https?|ftp):\/\/[^\s<]*/i.exec(rest);
+    m = /^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:\/\/[^\s<]*/.exec(rest);
     isWww = false;
   }
   if (m) {
@@ -1025,11 +1046,8 @@ function matchGfmUrl(s, i, n) {
     if (url.length === 0) return null;
     return { href: isWww ? 'http://' + url : url, text: url, end: i + url.length, email: false };
   }
-  m = /^[A-Za-z0-9._%+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z0-9-]+/.exec(rest);
+  m = EMAIL_RE.exec(rest);
   if (m) {
-    // the char after the domain must not be a word char or '-'
-    const after = rest.charCodeAt(m[0].length);
-    if (after !== -1 && (isWordChar(after) || after === 45)) return null;
     return { href: 'mailto:' + m[0], text: m[0], end: i + m[0].length, email: true };
   }
   return null;
@@ -1050,6 +1068,11 @@ function backpedalUrl(url) {
         else if (url.charCodeAt(k) === 41) close++;
       }
       if (close > open) { url = url.slice(0, -1); changed = true; continue; }
+    }
+    if (last === 59) {
+      // trailing &word; (an entity-like tail) is not part of the URL
+      const mm = /&\w+;$/.exec(url);
+      if (mm) { url = url.slice(0, url.length - mm[0].length); changed = true; continue; }
     }
     if (last === 38) {
       // trailing & that is not part of a valid entity
@@ -1187,7 +1210,9 @@ function parseInline(src, links, inLink) {
         const low = tag.toLowerCase();
         flushText();
         nodes.push({ t: 6, s: tag });
-        if (/^<(pre|script|style|textarea)(\s|\/|>)/.test(low)) { inRawBlock = true; rawTag = low.match(/^<(pre|script|style|textarea)/)[1]; }
+        // marked's inRawBlock: only <pre>, <code>, <kbd>, <script> open/close
+        if (/^<(pre|code|kbd|script)(\s|\/|>)/.test(low)) { inRawBlock = true; rawTag = low.match(/^<(pre|code|kbd|script)/)[1]; }
+        else if (/^<\/(pre|code|kbd|script)(\s|\/|>)/.test(low)) { inRawBlock = false; }
         i += tag.length;
         continue;
       }
