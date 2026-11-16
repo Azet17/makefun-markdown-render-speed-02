@@ -288,10 +288,12 @@ function findLabelEnd(src, i) {
     const c = src.charCodeAt(j);
     if (c === CC_BACKSLASH) { j += 2; continue; }
     if (c === CC_LT) {
-      // a ']' inside an HTML tag (e.g. inside a quoted attribute) is not
-      // the label end — skip the whole tag
+      // a ']' inside an HTML tag (e.g. inside a quoted attribute) or an
+      // autolink <scheme:...> is not the label end — skip the whole tag
       const ih = parseInlineHtml(src, j);
       if (ih) { j = ih[1]; continue; }
+      const al = parseAutolink(src, j);
+      if (al) { j = al[1]; continue; }
       j++; continue;
     }
     if (c === CC_TICK) {
@@ -691,10 +693,13 @@ function parseGfmAutolink(src, i, prevChar) {
   // email: word@domain.tld — only when preceded by start/space/punct, and the
   // char before must not be a word char (handled by caller via prevChar)
   let start = -1, kind = 0; // 1 www, 2 scheme, 3 email
+  // www. is lowercase-only; schemes are case-insensitive
   if (src.startsWith('www.', i)) { start = i; kind = 1; }
   else {
+    // scheme match is case-insensitive (doc-06/09/10: "Https://", "Http://")
+    const low = src.slice(i, i + 8).toLowerCase();
     for (const s of GFM_SCHEMES) {
-      if (src.startsWith(s, i)) { start = i; kind = 2; break; }
+      if (low.startsWith(s)) { start = i; kind = 2; break; }
     }
   }
   // a generic scheme (mailto:, xmpp:, ...) followed by an email
@@ -871,6 +876,12 @@ function inlineStr(src, refs, noEm) {
   return out.join('');
 }
 
+// Count of markdown links ([text](url) / reference) formed so far in this
+// parse. Autolinks do NOT count: a bare URL inside a link label must not
+// block the outer link (doc-08/09), only a markdown link inside it does.
+// The nested-link check snapshots this before rendering a label.
+let mdLinkCount = 0;
+
 function inlineInto(src, refs, out, noEm) {
   const n = src.length;
   let i = 0;
@@ -956,10 +967,12 @@ function inlineInto(src, refs, out, noEm) {
         if (lp) {
           const href = cleanUrl(lp.href);
           if (href !== null) {
-            // a link cannot contain another link: if the label renders to
-            // HTML containing a link, the outer link does not form
+            // a link cannot contain another MARKDOWN link: snapshot the
+            // markdown-link count before rendering the label; an autolink
+            // inside the label does not block the outer link (doc-08/09)
+            const linksBefore = mdLinkCount;
             const labelHtml = isImg ? null : inlineStr(labelRaw, refs, false);
-            if (!isImg && labelHtml !== null && labelHtml.indexOf('<a ') !== -1) {
+            if (!isImg && labelHtml !== null && mdLinkCount !== linksBefore) {
               // fall through to the literal '[' handling below; do NOT take
               // the suppress-emphasis path (the inner emphasis must form)
               nestedLink = true;
@@ -969,6 +982,7 @@ function inlineInto(src, refs, out, noEm) {
                 out.push('<img src="' + escAttrKeepEnt(href) + '" alt="' + plainTextOf(labelRaw, refs) + '"' +
                   (lp.title !== null ? ' title="' + escAttrKeepEnt(lp.title) + '"' : '') + '>');
               } else {
+                mdLinkCount++;
                 out.push('<a href="' + escAttrKeepEnt(href) + '"' +
                   (lp.title !== null ? ' title="' + escAttrKeepEnt(lp.title) + '"' : '') + '>' +
                   labelHtml + '</a>');
@@ -993,9 +1007,11 @@ function inlineInto(src, refs, out, noEm) {
                 (ref.title !== null ? ' title="' + escAttrKeepEnt(ref.title) + '"' : '') + '>');
               i = refEnd + 1; continue;
             }
+            const linksBefore = mdLinkCount;
             const labelHtml = inlineStr(labelRaw, refs, false);
-            if (labelHtml.indexOf('<a ') === -1) {
+            if (mdLinkCount === linksBefore) {
               flush();
+              mdLinkCount++;
               out.push('<a href="' + escAttrKeepEnt(ref.href) + '"' +
                 (ref.title !== null ? ' title="' + escAttrKeepEnt(ref.title) + '"' : '') + '>' +
                 labelHtml + '</a>');
@@ -1008,13 +1024,15 @@ function inlineInto(src, refs, out, noEm) {
       if (!fullRefAttempted) {
         const ref = refs.get(normalizeRef(labelRaw));
         if (ref) {
+          const linksBefore = mdLinkCount;
           const labelHtml = isImg ? null : inlineStr(labelRaw, refs, false);
-          if (isImg || labelHtml.indexOf('<a ') === -1) {
+          if (isImg || mdLinkCount === linksBefore) {
             flush();
             if (isImg) {
               out.push('<img src="' + escAttrKeepEnt(ref.href) + '" alt="' + plainTextOf(labelRaw, refs) + '"' +
                 (ref.title !== null ? ' title="' + escAttrKeepEnt(ref.title) + '"' : '') + '>');
             } else {
+              mdLinkCount++;
               out.push('<a href="' + escAttrKeepEnt(ref.href) + '"' +
                 (ref.title !== null ? ' title="' + escAttrKeepEnt(ref.title) + '"' : '') + '>' +
                 labelHtml + '</a>');
@@ -2059,7 +2077,29 @@ function expandTabs(line) {
 
 function parse(src) {
   src = src.replace(/\r\n?/g, '\n');
-  const lines = src.split('\n').map(expandTabs);
+  const rawLines = src.split('\n');
+  // Expand tabs, except inside fenced code blocks, where tabs are literal
+  // content (doc-02: a "\tindented with a tab" fence line keeps its tab).
+  // Fence open/close is detected on the expanded line; content lines keep
+  // the raw line.
+  const lines = [];
+  let fence = null;
+  for (const raw of rawLines) {
+    const exp = expandTabs(raw);
+    if (fence) {
+      const cm = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(exp);
+      if (cm && cm[1][0] === fence.char && cm[1].length >= fence.len) {
+        fence = null;
+        lines.push(exp);
+      } else {
+        lines.push(raw);
+      }
+    } else {
+      lines.push(exp);
+      const fm = fenceMatch(exp);
+      if (fm) fence = { char: fm.char, len: fm.len };
+    }
+  }
   const refs = new Map();
   collectRefs(lines, refs);
   return parseBlocks(lines, refs, false);
