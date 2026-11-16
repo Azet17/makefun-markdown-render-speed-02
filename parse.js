@@ -1038,10 +1038,12 @@ function htmlBlockStart(line) {
   let m = /^<\/?([a-z][a-z0-9-]*)([\s\/>]|$)/i.exec(s);
   if (m && BLOCK_TAGS.has(m[1].toLowerCase())) return { type: 6, endRe: null };
   // type 7: any complete open/close tag that is not a void element,
-  // ALONE on the line (followed only by whitespace)
-  m = /^<([a-z][a-z0-9-]*)(\s[^>]*)?\/?>/i.exec(s) || /^<\/([a-z][a-z0-9-]*)\s*>/i.exec(s);
+  // ALONE on the line (followed only by whitespace). The tag must have
+  // VALID attributes (spec regex) — `<a h*#ref="hi">` and
+  // `<a href='bar'title=title>` are not tags (cm-619/622).
+  m = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>/.exec(s);
   if (m && s.slice(m[0].length).trim() === '') {
-    const name = m[1].toLowerCase();
+    const name = s.slice(1).replace(/^\//, '').match(/^[A-Za-z][A-Za-z0-9-]*/)[0].toLowerCase();
     if (!VOID_ELEMENTS.has(name)) return { type: 7, endRe: null };
   }
   return null;
@@ -1063,13 +1065,15 @@ function parseHtmlTag(text, i) {
   if (m) return { raw: m[0], end: i + m[0].length };
   m = /^<!\[CDATA\[(?:(?!\]\]>)[\s\S])*?\]\]>/.exec(rest);
   if (m) return { raw: m[0], end: i + m[0].length };
-  // open / close tag
-  m = /^<\/?[A-Za-z][A-Za-z0-9-]*(\s+[^>]*?)?\/?>/.exec(rest);
+  // open / close tag — CommonMark spec regex: attribute names are
+  // [A-Za-z_:][A-Za-z0-9_.:-]*, values are unquoted (no space " ' = < >
+  // `), single-quoted, or double-quoted, and a quoted value may contain
+  // `>` (so `<em>` inside an attribute does not end the tag). This
+  // rejects `<a h*#ref="hi">`, `<a href="hi'>`, `<foo bim!bop />`,
+  // `<a href='bar'title=title>` while accepting quoted `>` (cm-616/619-622).
+  m = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>/.exec(rest);
   if (m) {
-    // validate attributes: quoted values must close; no '<' inside
-    const tag = m[0];
-    if (tag.includes('<') && tag.indexOf('<') > 0) return null;
-    return { raw: tag, end: i + tag.length };
+    return { raw: m[0], end: i + m[0].length };
   }
   return null;
 }
