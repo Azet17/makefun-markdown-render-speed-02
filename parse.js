@@ -653,7 +653,7 @@ function trimGfmEnd(s) {
 // Parse a GFM email address starting at src[i]. Returns the end index of
 // the valid email (trailing punctuation trimmed) or -1.
 // ---------------------------------------------------------------------------
-function parseGfmEmail(src, i) {
+function parseGfmEmail(src, i, openUnderscore) {
   const n = src.length;
   let j = i;
   while (j < n) {
@@ -663,13 +663,18 @@ function parseGfmEmail(src, i) {
   }
   if (j >= n || src.charCodeAt(j) !== CC_AT) return -1;
   let k = j + 1;
+  // domain: alnum/./- plus "_" when followed by an alnum (a "_" inside the
+  // domain, e.g. "first@example.com_baz", is part of the email)
   while (k < n) {
     const c = src.charCodeAt(k);
     if (isAlphaNum(c) || c === 46 || c === 45) k++;
+    else if (c === 95 && k + 1 < n && isAlphaNum(src.charCodeAt(k + 1))) k++;
     else break;
   }
-  // the email must be a complete word: a '_' right after it disqualifies it
-  if (k < n && src.charCodeAt(k) === 95) return -1;
+  // a trailing "_" disqualifies the email UNLESS it is an emphasis closer
+  // (an unmatched opening "_" delimiter exists before it — doc-38:
+  // "_used first@example.com_" links, plain "first@example.com_" does not)
+  if (k < n && src.charCodeAt(k) === 95 && !openUnderscore) return -1;
   // trim trailing punctuation from the email
   let e = k;
   while (e > i) {
@@ -691,7 +696,7 @@ function parseGfmEmail(src, i) {
   return e;
 }
 
-function parseGfmAutolink(src, i, prevChar) {
+function parseGfmAutolink(src, i, prevChar, openUnderscore) {
   const n = src.length;
   // www./scheme links need a word boundary before them
   if (prevChar !== -1 && isWordChar(prevChar)) return null;
@@ -712,7 +717,7 @@ function parseGfmAutolink(src, i, prevChar) {
     const sm = /^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:/.exec(src.slice(i, i + 34));
     if (sm) {
       const schemeEnd = i + sm[0].length;
-      const emEnd = parseGfmEmail(src, schemeEnd);
+      const emEnd = parseGfmEmail(src, schemeEnd, openUnderscore);
       if (emEnd !== -1) {
         // the email is the link; a non-mailto scheme may add one /segment
         let end = emEnd;
@@ -764,7 +769,7 @@ function parseGfmAutolink(src, i, prevChar) {
   // bare email
   if (prevChar !== -1 && isWordChar(prevChar)) return null;
   {
-    const emEnd = parseGfmEmail(src, i);
+    const emEnd = parseGfmEmail(src, i, openUnderscore);
     if (emEnd !== -1) {
       const em = src.slice(i, emEnd);
       const href = 'mailto:' + em;
@@ -1099,7 +1104,13 @@ function inlineInto(src, refs, out, noEm, noGfm) {
     // plain text); angle-bracket autolinks still form there (above).
     if (!noGfm && (c === 119 || c === 104 || c === 102 || isAlphaNum(c))) {
       const prev = i > 0 ? src.charCodeAt(i - 1) : -1;
-      const g = parseGfmAutolink(src, i, prev);
+      // an unmatched opening "_" delimiter means a trailing "_" after an
+      // email may be an emphasis closer, not part of the word (doc-38)
+      let openUnderscore = false;
+      for (let d = 0; d < delims.length; d++) {
+        if (delims[d].ch === 95 && delims[d].open && delims[d].len > 0) { openUnderscore = true; break; }
+      }
+      const g = parseGfmAutolink(src, i, prev, openUnderscore);
       if (g) { flush(); out.push(g[0]); i = g[1]; continue; }
     }
     // fast path: plain text run of word chars only — every word start goes
