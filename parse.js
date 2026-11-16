@@ -536,6 +536,18 @@ function blockStartKind(line, para) {
 }
 
 // ---------- block lexer ----------
+// Does the block content in `inner` end with a paragraph at the TOP level
+// (no descending into nested lists/quotes)? Used for the looseness check:
+// a blank line inside a nested list must not make the outer list loose.
+function endsWithParaTop(inner, links) {
+  if (inner.length === 0) return false;
+  let last = inner.length - 1;
+  while (last >= 0 && isBlankL(inner[last])) last--;
+  if (last < 0) return false;
+  const nodes = lexBlocks(inner.slice(0, last + 1), links, false, false);
+  return nodes.length > 0 && nodes[nodes.length - 1].t === 'p';
+}
+
 // Does the block content in `inner` (so far) end with an open paragraph?
 // A lazy continuation line can only continue a paragraph, not a fence/code/html/list.
 // Descends into nested blockquotes / list items (cm-250/251).
@@ -591,8 +603,18 @@ function lexBlocks(lines, links, top, srcEndsNL) {
     if (fence) {
       const body = [];
       let j = i + 1;
-      // content lines are dedented by the opening fence's indent
-      while (j < n && !fenceEndL(lines[j], fence)) { body.push(stripColsL(lines[j], fence.indent).s); j++; }
+      // content lines are dedented by the opening fence's indent. A leading
+      // tab expands to spaces from the line's column only when the line came
+      // from a container (column > 0); at column 0 it is preserved (doc-01).
+      while (j < n && !fenceEndL(lines[j], fence)) {
+        const dl = stripColsL(lines[j], fence.indent);
+        let txt = dl.s;
+        if (txt.charCodeAt(0) === 9 && dl.c > 0) {
+          txt = ' '.repeat(4 - (dl.c % 4)) + txt.slice(1);
+        }
+        body.push(txt);
+        j++;
+      }
       const info = fence.info.replace(/\\(.)/g, '$1').trim();
       const lang = info ? info.split(/\s+/)[0] : '';
       nodes.push({ t: 'fence', lang, text: body.join('\n') });
@@ -748,10 +770,20 @@ function parseList(lines, start, links) {
       const lc = listContent(line, m);
       const itemLines = [];
       if (!lc.empty) itemLines.push(lc.content);
+      // a fence opened in the item swallows following lines regardless of
+      // indent until it closes (doc-02)
+      let inFence = null;
+      if (!lc.empty) { const f0 = fenceStartL(lc.content); if (f0) inFence = f0; }
       let j = i + 1;
       let itemHasBlank = false;
       while (j < lines.length) {
         const l = lines[j];
+        if (inFence) {
+          const dl = indentOfL(l).cols >= lc.contentIndent ? stripColsL(l, lc.contentIndent) : L(l.s, l.c);
+          itemLines.push(dl);
+          if (fenceEndL(dl, inFence)) inFence = null;
+          j++; continue;
+        }
         if (isBlankL(l)) {
           // an empty item followed by a blank line is empty: no content
           // may follow (cm-280)
@@ -761,10 +793,24 @@ function parseList(lines, start, links) {
           if (k >= lines.length) break;
           const nm2 = listMarker(lines[k]);
           if (nm2 && nm2.bullet === first.bullet && nm2.ordered === first.ordered && nm2.delim === first.delim && indentOfL(lines[k]).cols < lc.contentIndent) break;
-          if (indentOfL(lines[k]).cols >= lc.contentIndent) { itemHasBlank = true; while (j < k) { itemLines.push(L('', 0)); j++; } continue; }
+          if (indentOfL(lines[k]).cols >= lc.contentIndent) {
+            // a blank line counts toward looseness only if it separates two
+            // blocks that are direct children of this item: the following
+            // line is at the item's content indent, or the item so far ends
+            // with a paragraph (a blank inside a nested list/quote does not
+            // make the outer list loose, doc-02)
+            if (indentOfL(lines[k]).cols === lc.contentIndent || endsWithParaTop(itemLines, links)) itemHasBlank = true;
+            while (j < k) { itemLines.push(L('', 0)); j++; } continue;
+          }
           break;
         }
-        if (indentOfL(l).cols >= lc.contentIndent) { itemLines.push(stripColsL(l, lc.contentIndent)); j++; continue; }
+        if (indentOfL(l).cols >= lc.contentIndent) {
+          const dl = stripColsL(l, lc.contentIndent);
+          itemLines.push(dl);
+          const f = fenceStartL(dl);
+          if (f) inFence = f;
+          j++; continue;
+        }
         // a lazy paragraph continuation: a plain-text line (no block start,
         // not a list marker, not an hr) while the item so far ends with a
         // paragraph (cm-290/291). Indent >= 4 loses 4 columns (code-indent
