@@ -447,6 +447,10 @@ function parseInlineHtml(src, i) {
   // comment
   if (c1 === CC_BANG) {
     if (src.startsWith('--', i + 2)) {
+      // <!--> is a complete (empty) comment on its own (cm-626)
+      if (i + 4 < n && src.charCodeAt(i + 4) === CC_GT) return [src.slice(i, i + 5), i + 5];
+      // <!---> is likewise a complete comment (cm-626)
+      if (i + 5 < n && src.charCodeAt(i + 4) === 45 && src.charCodeAt(i + 5) === CC_GT) return [src.slice(i, i + 6), i + 6];
       const e = src.indexOf('-->', i + 4);
       if (e === -1) return null;
       return [src.slice(i, e + 3), e + 3];
@@ -483,12 +487,21 @@ function parseInlineHtml(src, i) {
   }
   const nameEnd = j;
   if (nameEnd === (isClose ? i + 2 : i + 1)) return null;
+  // a closing tag cannot have attributes (cm-624: </a href="foo">)
+  if (isClose) {
+    while (j < n && (src.charCodeAt(j) === 32 || src.charCodeAt(j) === 9 || src.charCodeAt(j) === 10)) j++;
+    if (j < n && src.charCodeAt(j) === CC_GT) return [src.slice(i, j + 1), j + 1];
+    return null;
+  }
   // attributes until '>' — spec: whitespace + attribute name (+ '=' + value),
-  // an unquoted value may not contain space " ' = < > or backtick; no '<'
+  // an unquoted value may not contain space " ' = < > or backtick; no '<'.
+  // An attribute name MUST be preceded by whitespace (cm-609 <m:abc>,
+  // cm-622 <a href='bar'title=title>).
   const isAttrStart = (ch) => (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95 || ch === 58;
   const isAttrChar = (ch) => isAttrStart(ch) || (ch >= 48 && ch <= 57) || ch === 45 || ch === 46;
   while (j < n) {
     // skip whitespace
+    const wsStart = j;
     while (j < n && (src.charCodeAt(j) === 32 || src.charCodeAt(j) === 9 || src.charCodeAt(j) === 10)) j++;
     if (j >= n) return null;
     const ch = src.charCodeAt(j);
@@ -498,8 +511,9 @@ function parseInlineHtml(src, i) {
       return null;
     }
     if (ch === CC_LT) return null;
-    // attribute name
+    // attribute name: must be preceded by whitespace
     if (!isAttrStart(ch)) return null;
+    if (j === wsStart) return null;
     while (j < n && isAttrChar(src.charCodeAt(j))) j++;
     // optional whitespace, optional = value
     while (j < n && (src.charCodeAt(j) === 32 || src.charCodeAt(j) === 9 || src.charCodeAt(j) === 10)) j++;
@@ -1201,9 +1215,16 @@ function htmlBlockStart(line) {
   if (tm) {
     const name = tm[2].toLowerCase();
     if (HTML_BLOCK_TAGS.has(name)) return 6;
-    // type 7: a complete open/close tag and nothing else on the line
-    if (/^[A-Za-z][A-Za-z0-9-]*(\s[^>]*)?\/?>[ \t]*$/.test(rest) ||
-        /^\/[A-Za-z][A-Za-z0-9-]*[ \t]*>[ \t]*$/.test(rest)) return 7;
+    // type 7: a complete valid open/close tag and nothing else on the
+    // line — validate with the inline tag parser, not a loose regex
+    // (cm-619, cm-622: invalid attributes must not start a block)
+    const ltIdx = line.indexOf('<');
+    const ih = parseInlineHtml(line, ltIdx);
+    if (ih) {
+      let r = ih[1];
+      while (r < line.length && (line.charCodeAt(r) === 32 || line.charCodeAt(r) === 9)) r++;
+      if (r >= line.length) return 7;
+    }
   }
   return 0;
 }
