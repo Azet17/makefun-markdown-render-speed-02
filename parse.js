@@ -920,6 +920,14 @@ function stripListFirstLine(line, m) {
 // ---------- HTML blocks ----------
 const BLOCK_TAGS = new Set(('address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p param search section summary table tbody td tfoot th thead title tr track ul').split(' '));
 
+// Closing tag for a raw-text element (script/pre/style/textarea): unlike
+// other block-tag closes, it does NOT interrupt a paragraph (probed).
+function isRawCloseTag(line) {
+  const { cols, index } = lineIndent(line);
+  if (cols > 3) return false;
+  return /^<\/(script|pre|style|textarea)(\s|\/|>|$)/i.test(line.slice(index));
+}
+
 function htmlBlockStart(line) {
   // line: content after container stripping, with leading spaces counted.
   // Returns {type, endRe} or null. Types 1-5 end on a line containing endRe;
@@ -928,7 +936,7 @@ function htmlBlockStart(line) {
   if (cols > 3) return null;
   const s = line.slice(index);
   const low = s.toLowerCase();
-  if (/^<(script|pre|style|textarea)(\s|\/|>)/.test(low)) {
+  if (/^<(script|pre|style|textarea)(\s|\/|>|$)/.test(low)) {
     const tag = low.match(/^<(script|pre|style|textarea)/)[1];
     return { type: 1, endRe: new RegExp('</' + tag + '\\s*>', 'i') };
   }
@@ -941,7 +949,7 @@ function htmlBlockStart(line) {
   if (m && BLOCK_TAGS.has(m[1].toLowerCase())) return { type: 6, endRe: null };
   // type 7: any complete open/close tag that is not a void element,
   // ALONE on the line (followed only by whitespace)
-  m = /^<([a-z][a-z0-9-]*)(\s[^>]*)?\/?>/.exec(s) || /^<\/([a-z][a-z0-9-]*)\s*>/.exec(s);
+  m = /^<([a-z][a-z0-9-]*)(\s[^>]*)?\/?>/i.exec(s) || /^<\/([a-z][a-z0-9-]*)\s*>/i.exec(s);
   if (m && s.slice(m[0].length).trim() === '') {
     const name = m[1].toLowerCase();
     if (!VOID_ELEMENTS.has(name)) return { type: 7, endRe: null };
@@ -1012,8 +1020,8 @@ function parseRefDef(lines, i) {
     if (i + 1 >= lines.length) return null;
     const next = lines[i + 1];
     if (isBlank(next)) return null;
+    // continuation line: any indent allowed, strip leading whitespace
     const ni = lineIndent(next);
-    if (ni.cols > 3) return null;
     rest = next.slice(ni.index);
     consumed = 2;
   }
@@ -1078,29 +1086,27 @@ function parseRefDef(lines, i) {
       title = tv;
       t = t.slice(q + 1);
     } else return null;
-  } else if (consumed === 1 && i + 1 < lines.length && !isBlank(lines[i + 1])) {
-    // title on the next line
-    const next = lines[i + 1];
+  } else if (i + consumed < lines.length && !isBlank(lines[i + consumed])) {
+    // title on the next line (after the label line or the destination line)
+    const next = lines[i + consumed];
     const ni = lineIndent(next);
-    if (ni.cols <= 3) {
-      const nt = next.slice(ni.index);
-      const qc = nt.charCodeAt(0);
-      if (qc === 34 || qc === 39 || qc === 40) {
-        const endQ = qc === 40 ? 41 : qc;
-        let tv = '';
-        let q = 1;
-        let good = false;
-        while (q < nt.length) {
-          const c = nt.charCodeAt(q);
-          if (c === 92 && q + 1 < nt.length && isPunctCode(nt.charCodeAt(q + 1))) { tv += nt[q + 1]; q += 2; continue; }
-          if (c === endQ) { good = true; break; }
-          tv += nt[q];
-          q++;
-        }
-        if (good) {
-          let after = nt.slice(q + 1).trim();
-          if (after === '') { title = tv; consumed = 2; t = ''; }
-        }
+    const nt = next.slice(ni.index);
+    const qc = nt.charCodeAt(0);
+    if (qc === 34 || qc === 39 || qc === 40) {
+      const endQ = qc === 40 ? 41 : qc;
+      let tv = '';
+      let q = 1;
+      let good = false;
+      while (q < nt.length) {
+        const c = nt.charCodeAt(q);
+        if (c === 92 && q + 1 < nt.length && isPunctCode(nt.charCodeAt(q + 1))) { tv += nt[q + 1]; q += 2; continue; }
+        if (c === endQ) { good = true; break; }
+        tv += nt[q];
+        q++;
+      }
+      if (good) {
+        let after = nt.slice(q + 1).trim();
+        if (after === '') { title = tv; consumed++; t = ''; }
       }
     }
   }
@@ -1128,6 +1134,7 @@ function isHrLine(text) {
 // the container because no paragraph is open).
 function parseBlocks(lines, ctx, opts) {
   const strip4 = !!(opts && opts.strip4);
+  const isTop = !opts || opts.isTop === true;
   const blocks = [];
   let i = 0;
   const n = lines.length;
@@ -1169,7 +1176,11 @@ function parseBlocks(lines, ctx, opts) {
     if (/^#{1,6}(\s|$)/.test(s)) return true;
     if (/^(`{3,}|~{3,})/.test(s)) return true;
     if (/^(\*\s*){3,}$/.test(s) || /^(-\s*){3,}$/.test(s) || /^(_\s*){3,}$/.test(s)) return true;
-    if (htmlBlockStart(text)) return true;
+    // only HTML block types 1-5 can interrupt a paragraph (6-7 cannot),
+    // except a type-6 block-tag close (not a raw-text close) CAN interrupt
+    const hb = htmlBlockStart(text);
+    if (hb && hb.type <= 5) return true;
+    if (hb && hb.type === 6 && !isRawCloseTag(text)) return true;
     if (listMarker(text)) return true;
     if (stripBlockquote(text) !== null) return true;
     return false;
@@ -1359,10 +1370,12 @@ function parseBlocks(lines, ctx, opts) {
       continue;
     }
 
-    // HTML block
+    // HTML block (types 6-7 cannot interrupt a paragraph, except a type-6
+    // block-tag close other than a raw-text close, which CAN)
     if (cols <= 3) {
       const hb = htmlBlockStart(text);
-      if (hb) {
+      const canInterrupt = !!hb && (hb.type <= 5 || (hb.type === 6 && !isRawCloseTag(text)));
+      if (hb && (!para || canInterrupt)) {
         const hlines = [];
         if (hb.type <= 5) {
           while (i < n) {
@@ -1371,15 +1384,17 @@ function parseBlocks(lines, ctx, opts) {
             i++;
             if (hb.endRe.test(lt)) break;
           }
-          // trailing newline is dropped when the block is followed by a blank line
-          const trail = (i < n && isBlank(lines[i].text)) ? '' : '\n';
+          // trailing newline: dropped when the block is followed by a blank
+          // line, or when it ends at a container boundary (only a true
+          // document-EOF end keeps it)
+          const trail = (i < n && isBlank(lines[i].text)) ? '' : (i >= n ? (isTop ? '\n' : '') : '\n');
           addBlock({ kind: 'html', text: hlines.join('\n') + trail });
         } else {
           while (i < n && !isBlank(lines[i].text)) {
             hlines.push(lines[i].text);
             i++;
           }
-          addBlock({ kind: 'html', text: hlines.join('\n') + (i >= n ? '\n' : '') });
+          addBlock({ kind: 'html', text: hlines.join('\n') + (i >= n && isTop ? '\n' : '') });
         }
         continue;
       }
@@ -1705,7 +1720,7 @@ function parse(src) {
   // a trailing newline produces a final empty string; drop it (it is not a line)
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
   const lines = rawLines.map((t) => ({ text: t, lazy: false }));
-  const { blocks } = parseBlocks(lines, ctx, { strip4: false });
+  const { blocks } = parseBlocks(lines, ctx, { strip4: false, isTop: true });
   let html = renderBlocks(blocks, ctx, false);
   html = applyTaskLists(html);
   return html;
