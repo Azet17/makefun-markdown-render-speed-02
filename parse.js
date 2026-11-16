@@ -1009,48 +1009,66 @@ function parseHtmlTag(text, i) {
 }
 
 // ---------- reference definitions ----------
-// Parse a link reference definition starting at lines[i] (a single line, or
-// the line + the next line for a split destination/title). Returns
-// {label, href, title, consumed} or null. consumed = number of lines used.
+// Parse a link reference definition starting at lines[i]. The label and the
+// title may each span multiple lines. Returns {label, href, title,
+// consumed} or null. consumed = number of lines used.
 function parseRefDef(lines, i) {
   const first = lines[i];
   const { cols, index } = lineIndent(first);
   if (cols > 3) return null;
   let s = first.slice(index);
-  // [label]:
+  // [label]: — the label may span lines; track where ']' lands
   if (s.charCodeAt(0) !== 91) return null;
-  let k = 1;
   let lab = '';
   let ok = false;
-  while (k < s.length) {
-    const c = s.charCodeAt(k);
-    if (c === 92 && k + 1 < s.length) { lab += s[k] + s[k + 1]; k += 2; continue; }
-    if (c === 93) { ok = true; break; }
-    if (c === 91) return null;
-    lab += s[k];
-    k++;
+  let labelEndLine = i;
+  let labelEndPos = -1;
+  let curLine = s;
+  let curIdx = 1;
+  let lineNo = i;
+  while (true) {
+    while (curIdx < curLine.length) {
+      const c = curLine.charCodeAt(curIdx);
+      if (c === 92 && curIdx + 1 < curLine.length) { lab += curLine[curIdx] + curLine[curIdx + 1]; curIdx += 2; continue; }
+      if (c === 93) { ok = true; labelEndLine = lineNo; labelEndPos = curIdx + 1; break; }
+      if (c === 91) return null;
+      lab += curLine[curIdx];
+      curIdx++;
+    }
+    if (ok) break;
+    // end of line without ']': the label continues on the next line
+    if (lineNo + 1 >= lines.length) return null;
+    const nextLine = lines[lineNo + 1];
+    if (isBlank(nextLine)) return null;
+    lab += '\n';
+    lineNo++;
+    curLine = nextLine;
+    curIdx = 0;
   }
   if (!ok) return null;
   const label = normalizeLabel(lab);
   if (label === '') return null;
-  k++;
+  // the ':' and destination start on the line where ']' landed; curLine
+  // is that line (stripped of leading indent only for the first line)
+  let consumed = labelEndLine - i + 1;
+  let s2 = curLine.slice(labelEndPos);
+  let k = 0;
   // ':' then optional whitespace
-  while (k < s.length && (s.charCodeAt(k) === 32 || s.charCodeAt(k) === 9)) k++;
-  if (k >= s.length || s.charCodeAt(k) !== 58) return null;
+  while (k < s2.length && (s2.charCodeAt(k) === 32 || s2.charCodeAt(k) === 9)) k++;
+  if (k >= s2.length || s2.charCodeAt(k) !== 58) return null;
   k++;
-  while (k < s.length && (s.charCodeAt(k) === 32 || s.charCodeAt(k) === 9)) k++;
+  while (k < s2.length && (s2.charCodeAt(k) === 32 || s2.charCodeAt(k) === 9)) k++;
   // destination: <...> or bare (no spaces, no control chars), or on the next line
   let dest = null;
-  let rest = s.slice(k);
-  let consumed = 1;
+  let rest = s2.slice(k);
   if (rest === '') {
-    if (i + 1 >= lines.length) return null;
-    const next = lines[i + 1];
+    if (labelEndLine + 1 >= lines.length) return null;
+    const next = lines[labelEndLine + 1];
     if (isBlank(next)) return null;
     // continuation line: any indent allowed, strip leading whitespace
     const ni = lineIndent(next);
     rest = next.slice(ni.index);
-    consumed = 2;
+    consumed++;
   }
   if (rest.charCodeAt(0) === 60) {
     // <...>
@@ -1093,7 +1111,7 @@ function parseRefDef(lines, i) {
   // the destination must be followed by whitespace (or end of line) —
   // a title glued to it (e.g. `<bar>(baz)`) makes the definition invalid
   if (rest.length > 0 && rest.charCodeAt(0) !== 32 && rest.charCodeAt(0) !== 9) return null;
-  // optional title on the same line or the next line
+  // optional title: on the same line, the next line, or spanning lines
   let title = null;
   let t = rest;
   let ti = 0;
@@ -1102,19 +1120,34 @@ function parseRefDef(lines, i) {
     const qc = t.charCodeAt(ti);
     if (qc === 34 || qc === 39 || qc === 40) {
       const endQ = qc === 40 ? 41 : qc;
+      // the title may span lines: scan this line then following lines
       let tv = '';
-      let q = ti + 1;
       let good = false;
-      while (q < t.length) {
-        const c = t.charCodeAt(q);
-        if (c === 92 && q + 1 < t.length && isPunctCode(t.charCodeAt(q + 1))) { tv += t[q + 1]; q += 2; continue; }
-        if (c === endQ) { good = true; break; }
-        tv += t[q];
-        q++;
+      let tline = t.slice(ti + 1);
+      let extra = 0;
+      while (true) {
+        let q = 0;
+        let found = false;
+        while (q < tline.length) {
+          const c = tline.charCodeAt(q);
+          if (c === 92 && q + 1 < tline.length && isPunctCode(tline.charCodeAt(q + 1))) { tv += tline[q + 1]; q += 2; continue; }
+          if (c === endQ) { good = true; found = true; break; }
+          tv += tline[q];
+          q++;
+        }
+        if (found) { t = tline.slice(q + 1); break; }
+        // no closing quote on this line: continue on the next line
+        // (a blank line ends the title — it cannot span one)
+        if (i + consumed + extra >= lines.length) return null;
+        const nl = lines[i + consumed + extra];
+        if (isBlank(nl)) return null;
+        tv += '\n';
+        extra++;
+        tline = nl;
       }
       if (!good) return null;
       title = tv;
-      t = t.slice(q + 1);
+      consumed += extra;
     } else return null;
   } else if (i + consumed < lines.length && !isBlank(lines[i + consumed])) {
     // title on the next line (after the label line or the destination line)
@@ -1125,19 +1158,28 @@ function parseRefDef(lines, i) {
     if (qc === 34 || qc === 39 || qc === 40) {
       const endQ = qc === 40 ? 41 : qc;
       let tv = '';
-      let q = 1;
       let good = false;
-      while (q < nt.length) {
-        const c = nt.charCodeAt(q);
-        if (c === 92 && q + 1 < nt.length && isPunctCode(nt.charCodeAt(q + 1))) { tv += nt[q + 1]; q += 2; continue; }
-        if (c === endQ) { good = true; break; }
-        tv += nt[q];
-        q++;
+      let tline = nt.slice(1);
+      let extra = 0;
+      let after = '';
+      while (true) {
+        let q = 0;
+        let found = false;
+        while (q < tline.length) {
+          const c = tline.charCodeAt(q);
+          if (c === 92 && q + 1 < tline.length && isPunctCode(tline.charCodeAt(q + 1))) { tv += tline[q + 1]; q += 2; continue; }
+          if (c === endQ) { good = true; found = true; break; }
+          tv += tline[q];
+          q++;
+        }
+        if (found) { after = tline.slice(q + 1); break; }
+        if (i + consumed + 1 + extra >= lines.length) break;
+        const nl = lines[i + consumed + 1 + extra];
+        tv += '\n';
+        extra++;
+        tline = nl;
       }
-      if (good) {
-        let after = nt.slice(q + 1).trim();
-        if (after === '') { title = tv; consumed++; t = ''; }
-      }
+      if (good && after.trim() === '') { title = tv; consumed += 1 + extra; t = ''; }
     }
   }
   // nothing but whitespace may follow the title
