@@ -1632,9 +1632,10 @@ function parseBlocks(lines, refs, tight) {
         codeLines.push(stripIndent(cl, ind.col));
         j++;
       }
-      // drop trailing blank lines — but only truly empty ones; a line
-      // holding spaces is content (cm-129: "```\n\n  \n```" keeps "\n  \n")
-      while (codeLines.length && codeLines[codeLines.length - 1] === '') codeLines.pop();
+      // drop exactly one trailing empty line (the newline before the
+      // closing fence is an artifact); a line holding spaces is content
+      // (cm-129 keeps "  ", cm-318 keeps one of two blank lines)
+      if (codeLines.length && codeLines[codeLines.length - 1] === '') codeLines.pop();
       const content = codeLines.length ? codeLines.join('\n') + '\n' : '';
       // the language is the info string's first word, with backslash
       // escapes decoded; entities in it are preserved, not re-escaped
@@ -1871,6 +1872,10 @@ function parseList(lines, i, refs) {
   const items = [];
   let j = i;
   let loose = false;
+  // fence state for the current item: a blank line inside a fenced code
+  // block is fence content, not a list separator (cm-318). Tracked per
+  // item, reset on a new item.
+  let fence = null;
   while (j < lines.length) {
     const line = lines[j];
     const cur = items[items.length - 1];
@@ -1878,7 +1883,16 @@ function parseList(lines, i, refs) {
     // nested list etc.), even if it looks like a marker — only a line less
     // indented than the content indent can start a new item of this list
     if (cur && !isBlank(line) && lineIndent(line).col >= cur.contentIndent) {
-      cur.lines.push(stripIndent(line, cur.contentIndent));
+      const stripped = stripIndent(line, cur.contentIndent);
+      cur.lines.push(stripped);
+      // update the fence state from this content line
+      if (fence) {
+        const cm = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(stripped);
+        if (cm && cm[1][0] === fence.char && cm[1].length >= fence.len) fence = null;
+      } else {
+        const fm = fenceMatch(stripped);
+        if (fm) fence = { char: fm.char, len: fm.len };
+      }
       j++;
       continue;
     }
@@ -1887,6 +1901,7 @@ function parseList(lines, i, refs) {
     if (m && m.type === listType && m.marker === marker &&
         lineIndent(line).col <= baseIndent + 3) {
       // a new item
+      fence = null;
       const item = { lines: [], contentIndent: m.contentIndent, task: null };
       let content = m.content;
       if (content !== '') {
@@ -1897,6 +1912,11 @@ function parseList(lines, i, refs) {
           content = content.slice(tm[0].length);
         }
         if (content !== '') item.lines.push(content);
+      }
+      // the item's first content line may open a fence (cm-318: "- ```")
+      if (content !== '') {
+        const fm0 = fenceMatch(content);
+        if (fm0) fence = { char: fm0.char, len: fm0.len };
       }
       items.push(item);
       j++;
@@ -1916,6 +1936,13 @@ function parseList(lines, i, refs) {
         continue;
       }
       if (lineIndent(lines[k]).col >= cur.contentIndent) {
+        // inside a fenced code block the blank lines are fence content:
+        // they neither separate items nor make the list loose (cm-318)
+        if (fence) {
+          for (let b = j; b < k; b++) cur.lines.push('');
+          j = k;
+          continue;
+        }
         // a blank line inside the item makes THIS list loose only when it
         // separates two of the item's own direct children. If the item
         // already contains a nested list and the next line continues that
