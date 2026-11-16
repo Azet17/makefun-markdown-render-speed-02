@@ -511,9 +511,12 @@ function parseInlineHtml(src, i) {
       return null;
     }
     if (ch === CC_LT) return null;
-    // attribute name: must be preceded by whitespace
+    // attribute name: must be preceded by whitespace. Check the source
+    // character before the name (whitespace may already have been
+    // consumed while looking for '=' after the previous attribute).
     if (!isAttrStart(ch)) return null;
-    if (j === wsStart) return null;
+    const prevCh = src.charCodeAt(j - 1);
+    if (prevCh !== 32 && prevCh !== 9 && prevCh !== 10) return null;
     while (j < n && isAttrChar(src.charCodeAt(j))) j++;
     // optional whitespace, optional = value
     while (j < n && (src.charCodeAt(j) === 32 || src.charCodeAt(j) === 9 || src.charCodeAt(j) === 10)) j++;
@@ -1935,6 +1938,10 @@ function parseList(lines, i, refs) {
         j = k;
         continue;
       }
+      // an empty item (no content lines yet) followed by a blank line is
+      // done: the indented line after the blank is not its content
+      // (cm-280: "-\n\n  foo" -> empty <li> plus a separate <p>)
+      if (cur.lines.length === 0) break;
       if (lineIndent(lines[k]).col >= cur.contentIndent) {
         // inside a fenced code block the blank lines are fence content:
         // they neither separate items nor make the list loose (cm-318)
