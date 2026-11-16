@@ -1276,10 +1276,11 @@ function parseBlocks(lines, ctx, opts) {
     if (hb && hb.type <= 5) return true;
     if (hb && hb.type === 6 && !isRawCloseTag(text)) return true;
     // a list marker interrupts a paragraph only if the item is non-empty;
-    // an ORDERED list interrupts only when it starts with 1 (cm-304:
-    // `14.` after a paragraph line stays paragraph text)
+    // an ORDERED list interrupts a top-level paragraph only when it starts
+    // with 1 (cm-304); inside a list item / blockquote a nested list may
+    // start with any number (probed: `- foo\n  14. bar` nests)
     const lm = listMarker(text);
-    if (lm && !lm.empty && (!lm.ordered || lm.start === 1)) return true;
+    if (lm && !lm.empty && (!lm.ordered || lm.start === 1 || !opts.isTop)) return true;
     if (stripBlockquote(text) !== null) return true;
     return false;
   }
@@ -1579,9 +1580,10 @@ function parseBlocks(lines, ctx, opts) {
     // list
     const lm = cols <= 3 ? listMarker(text) : null;
     // an empty list item cannot interrupt a paragraph: it stays a
-    // paragraph continuation line; an ordered list interrupts a paragraph
-    // only when it starts with 1 (cm-304)
-    if (lm && !(para && lm.empty) && !(para && lm.ordered && lm.start !== 1)) {
+    // paragraph continuation line; an ordered list interrupts a top-level
+    // paragraph only when it starts with 1 (cm-304); nested lists inside
+    // a list item may start with any number
+    if (lm && !(para && lm.empty) && !(para && lm.ordered && lm.start !== 1 && opts.isTop)) {
       closePara();
       const items = [];
       let ordered = lm.ordered;
