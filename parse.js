@@ -1063,7 +1063,7 @@ function parseRefDef(lines, i) {
       d += rest[q];
       q++;
     }
-    if (!good || d === '') return null;
+    if (!good) return null;
     dest = d;
     rest = rest.slice(q + 1);
   } else {
@@ -1087,6 +1087,9 @@ function parseRefDef(lines, i) {
     dest = d;
     rest = rest.slice(q);
   }
+  // the destination must be followed by whitespace (or end of line) —
+  // a title glued to it (e.g. `<bar>(baz)`) makes the definition invalid
+  if (rest.length > 0 && rest.charCodeAt(0) !== 32 && rest.charCodeAt(0) !== 9) return null;
   // optional title on the same line or the next line
   let title = null;
   let t = rest;
@@ -1205,7 +1208,9 @@ function parseBlocks(lines, ctx, opts) {
     const hb = htmlBlockStart(text);
     if (hb && hb.type <= 5) return true;
     if (hb && hb.type === 6 && !isRawCloseTag(text)) return true;
-    if (listMarker(text)) return true;
+    // a list marker interrupts a paragraph only if the item is non-empty
+    const lm = listMarker(text);
+    if (lm && !lm.empty) return true;
     if (stripBlockquote(text) !== null) return true;
     return false;
   }
@@ -1283,7 +1288,18 @@ function parseBlocks(lines, ctx, opts) {
       break;
     }
 
-    if (isBlank(text)) { closePara(); sawBlank = true; i++; continue; }
+    if (isBlank(text)) {
+      // a trailing whitespace-only line at the end of a container is kept
+      // as a paragraph continuation (its spaces are paragraph content),
+      // not a blank line (probed: `> foo\n>  ` keeps the space, while a
+      // top-level `foo\n ` line does not)
+      if (para && !isTop && i === n - 1 && text.length > 0) {
+        para.push(text);
+        i++;
+        continue;
+      }
+      closePara(); sawBlank = true; i++; continue;
+    }
 
     // setext heading (paragraph open, line is === or ---)
     if (para) {
@@ -1360,7 +1376,10 @@ function parseBlocks(lines, ctx, opts) {
           while (i < n) {
             const lobj = lines[i];
             const lt = lobj.text;
-            if (!lobj.lazy) {
+            // a lazy line cannot be fence content: it ends the fence (and
+            // the container); the line is left for the outer level
+            if (lobj.lazy) break;
+            {
               const li = lineIndent(lt);
               if (li.cols <= 3) {
                 const ls = lt.slice(li.index);
@@ -1372,7 +1391,7 @@ function parseBlocks(lines, ctx, opts) {
               }
             }
             let ct = lt;
-            if (!lobj.lazy) {
+            {
               const stripped = stripCodeIndent(lt, cols);
               // a content line with less indent than the fence loses all of
               // its leading whitespace
@@ -1487,7 +1506,9 @@ function parseBlocks(lines, ctx, opts) {
 
     // list
     const lm = cols <= 3 ? listMarker(text) : null;
-    if (lm) {
+    // an empty list item cannot interrupt a paragraph: it stays a
+    // paragraph continuation line
+    if (lm && !(para && lm.empty)) {
       closePara();
       const items = [];
       let ordered = lm.ordered;
@@ -1531,6 +1552,12 @@ function parseBlocks(lines, ctx, opts) {
             const cobj = lines[j];
             const ct = cobj.text;
             if (isBlank(ct)) {
+              // an item with no content yet ends at a blank line: a
+              // following indented line is NOT part of an empty item
+              // (probed: `-\n\n  foo` leaves an empty <li>)
+              let hasContent = false;
+              for (const sl of sub) if (!isBlank(sl.text)) { hasContent = true; break; }
+              if (!hasContent) break;
               // blank: include, but stop if the next non-blank line is a new
               // item at this level or is outside the list
               let k = j + 1;
