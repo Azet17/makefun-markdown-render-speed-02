@@ -598,6 +598,27 @@ function tryAutolink(text, i, prev, ctx) {
   // a `mailto:` prefix followed by something that is not a valid address
   // is not an autolink at all (do not fall through to bare-email inside it)
   if (/^mailto:/i.test(rest)) return null;
+  // generic scheme + email autolink (e.g. `xmpp:foo@bar.baz`,
+  // `xmpp:foo@bar.baz/txt`): scheme, email, and an optional single path
+  // segment. The path is one segment only (`/txt/bin` links only `/txt`).
+  m = /^([A-Za-z][A-Za-z0-9+.\-]{1,31}):([A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+)(\/[^\s<>\/]+)?/i.exec(rest);
+  if (m) {
+    const scheme = m[1].toLowerCase();
+    if (scheme !== 'http' && scheme !== 'https' && scheme !== 'ftp' && scheme !== 'mailto') {
+      const email = m[2];
+      if (!email.endsWith('-') && !email.endsWith('_')) {
+        let link = m[0];
+        // trim trailing punctuation from the path (e.g. a trailing `.`)
+        link = trimAutolink(link);
+        const after = text[i + link.length];
+        if (after === '_') {
+          const hasUnderscoreOpener = ctx.delims && ctx.delims.some((d) => d.active && d.ch === '_' && d.open);
+          if (!hasUnderscoreOpener) return null;
+        }
+        return { text: link, href: link, end: i + link.length };
+      }
+    }
+  }
   // bare email
   m = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+/.exec(rest);
   if (m) {
