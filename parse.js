@@ -156,7 +156,10 @@ function unescapeStr(s) {
 
 // Normalize a link label for lookup: unescape, collapse whitespace, trim, lowercase.
 function normalizeLabel(s) {
-  return unescapeStr(s).replace(/\s+/g, ' ').trim().toLowerCase();
+  // Link labels match LITERALLY (backslashes preserved): `[foo\!]` matches
+  // `[foo\!]` but NOT `[foo!]` (cm-545). Only whitespace is collapsed,
+  // case is folded (with ß/ẞ → ss, cm-540), and backslashes are kept.
+  return s.replace(/\s+/g, ' ').trim().toLowerCase().replace(/ß/g, 'ss');
 }
 
 // Does a parts list contain a BRACKET link node (t=4, not an autolink)
@@ -707,7 +710,18 @@ function inlineParse(text, ctx) {
       for (let k = brackets.length - 1; k >= 0; k--) if (brackets[k].active) { b = k; break; }
       if (b === -1) { cur += ']'; i++; continue; }
       const br = brackets[b];
-      const res = parseLinkTarget(text, i + 1, br, ctx);
+      let res = parseLinkTarget(text, i + 1, br, ctx);
+      if (!res) {
+        // If an inline link `(...)` is present but invalid, the bracket
+        // can still form a shortcut reference link (cm-568:
+        // `[foo](not a link)` -> `<a>foo</a>(not a link)`), leaving the
+        // parenthesised text literal.
+        if (i + 1 < n && text.charCodeAt(i + 1) === 40) {
+          const label = normalizeLabel(text.slice(br.src + 1, i));
+          const ref = label === '' ? null : ctx.refs.get(label);
+          if (ref) res = { href: ref.href, title: ref.title, end: i + 1 };
+        }
+      }
       if (!res) { br.active = false; cur += ']'; i++; continue; }
       // resolve emphasis inside the label first (bottom = the '[' node)
       processEmphasis(parts, delims, brackets, br.node);
@@ -1013,17 +1027,20 @@ function htmlBlockStart(line) {
 function parseHtmlTag(text, i) {
   const n = text.length;
   const rest = text.slice(i);
+  // HTML tags MAY span newlines (cm-615: `<b2\ndata="foo" >` is a tag).
+  // The `<a` suppression rule is about a literal SPACE after `<a`, not
+  // about newlines.
   let m = /^<!--(?:(?!-->)[\s\S])*?-->/.exec(rest);
-  if (m && !m[0].includes('\n')) return { raw: m[0], end: i + m[0].length };
+  if (m) return { raw: m[0], end: i + m[0].length };
   m = /^<\?(?:(?!\?>)[\s\S])*?\?>/.exec(rest);
-  if (m && !m[0].includes('\n')) return { raw: m[0], end: i + m[0].length };
+  if (m) return { raw: m[0], end: i + m[0].length };
   m = /^<![A-Z]+\s[^>]*>/.exec(rest);
-  if (m && !m[0].includes('\n')) return { raw: m[0], end: i + m[0].length };
+  if (m) return { raw: m[0], end: i + m[0].length };
   m = /^<!\[CDATA\[(?:(?!\]\]>)[\s\S])*?\]\]>/.exec(rest);
-  if (m && !m[0].includes('\n')) return { raw: m[0], end: i + m[0].length };
+  if (m) return { raw: m[0], end: i + m[0].length };
   // open / close tag
   m = /^<\/?[A-Za-z][A-Za-z0-9-]*(\s+[^>]*?)?\/?>/.exec(rest);
-  if (m && !m[0].includes('\n')) {
+  if (m) {
     // validate attributes: quoted values must close; no '<' inside
     const tag = m[0];
     if (tag.includes('<') && tag.indexOf('<') > 0) return null;
