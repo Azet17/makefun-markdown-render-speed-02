@@ -370,7 +370,13 @@ function processEmphasis(parts, delims, brackets, bottomNode) {
       const oIdx = parts.indexOf(o.node);
       if (oIdx <= bottomIdx) break;
       if (o.ch === closer.ch && o.open) {
-        if (closer.ch === '~' && (o.len < 2 || closer.len < 2)) { op--; continue; }
+        // '~' delimiters match only at equal length (single~single,
+        // double~~double; no cross-matching), and the odd-match rule
+        // does not apply to '~'
+        if (closer.ch === '~') {
+          if (o.len !== closer.len) { op--; continue; }
+          found = op; break;
+        }
         const odd = closer.open && o.close && ((o.len + closer.len) % 3 === 0) && (o.len % 3 !== 0 || closer.len % 3 !== 0);
         if (!odd) { found = op; break; }
       }
@@ -378,7 +384,7 @@ function processEmphasis(parts, delims, brackets, bottomNode) {
     }
     if (found === -1) { cur++; continue; }
     const opener = delims[found];
-    const use = closer.ch === '~' ? 2 : (opener.len >= 2 && closer.len >= 2 ? 2 : 1);
+    const use = closer.ch === '~' ? closer.len : (opener.len >= 2 && closer.len >= 2 ? 2 : 1);
     const oi = parts.indexOf(opener.node);
     const ci = parts.indexOf(closer.node);
     // trim the delimiter runs: opener loses `use` chars from its end,
@@ -492,10 +498,10 @@ function tryAutolink(text, i, prev, ctx) {
   for (let b = 0; b < ctx.brackets.length; b++) if (ctx.brackets[b].active) return null;
   const rest = text.slice(i);
   let m;
-  // www.
+  // www. (indices are absolute into text, starting at i + 4)
   if (rest.startsWith('www.')) {
     // domain: labels of [A-Za-z0-9_-]+ separated by '.'
-    let j = 4;
+    let j = i + 4;
     let labels = 0;
     while (j < n) {
       let k = j;
@@ -629,7 +635,6 @@ function inlineParse(text, ctx) {
       let j = i;
       while (j < n && text.charCodeAt(j) === c) j++;
       const m = j - i;
-      if (c === 126 && m < 2) { cur += '~'.repeat(m); i = j; continue; }
       const before = i > 0 ? text.charCodeAt(i - 1) : -1;
       const after = j < n ? text.charCodeAt(j) : -1;
       const [left, right] = flanking(before, after);
@@ -1702,12 +1707,18 @@ function renderBlocks(blocks, ctx, tightList) {
 }
 
 // Task lists: post-process <li> contents — a leading "[ ] " / "[x] " becomes a
-// checkbox input. Applied to the rendered list-item HTML.
+// checkbox input. Applied to the rendered list-item HTML. Handles tight
+// items (<li>[x] ) and loose items (<li><p>[x] ).
 function applyTaskLists(html) {
-  return html.replace(/<li>(?:\n)?(\[ \]|\[x\]|\[X\]) /g, (m, box) => {
-    const checked = box !== '[ ]' ? ' checked=""' : '';
-    return '<li><input' + checked + ' disabled="" type="checkbox"> ';
-  });
+  return html
+    .replace(/<li>(?:\n)?(\[ \]|\[x\]|\[X\]) /g, (m, box) => {
+      const checked = box !== '[ ]' ? ' checked=""' : '';
+      return '<li><input' + checked + ' disabled="" type="checkbox"> ';
+    })
+    .replace(/<li><p>(\[ \]|\[x\]|\[X\]) /g, (m, box) => {
+      const checked = box !== '[ ]' ? ' checked=""' : '';
+      return '<li><p><input' + checked + ' disabled="" type="checkbox"> ';
+    });
 }
 
 // ---------- top-level parse ----------
