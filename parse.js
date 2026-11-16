@@ -1746,11 +1746,15 @@ function parseBlocks(lines, refs, tight, inItem) {
       }
       // a trailing newline when the block runs to the end of the input and
       // the input ends with a newline (the last line is the trailing empty
-      // string), OR when another block follows directly (no blank line);
-      // a blank line after the block means no trailing newline
+      // string), OR when another block follows directly (no blank line),
+      // OR when the following blank line is whitespace-only but non-empty
+      // (probed: "<pre>\nfoo\n</pre>\n   \nbar" keeps "\n", but
+      // "<pre>\nfoo\n</pre>\n\nbar" drops it — a truly empty line ends
+      // the block without a trailing newline)
       const runsToEOF = j === n - 1 && lines[j] === '';
       const followedByContent = j < n && !isBlank(lines[j]);
-      html.push(blkLines.join('\n') + ((runsToEOF || followedByContent) ? '\n' : ''));
+      const followedByWSBlank = j < n && lines[j] !== '' && isBlank(lines[j]);
+      html.push(blkLines.join('\n') + ((runsToEOF || followedByContent || followedByWSBlank) ? '\n' : ''));
       i = j;
       continue;
     }
