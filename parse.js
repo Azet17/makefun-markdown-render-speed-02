@@ -111,29 +111,34 @@ function parseDef(lines, i) {
   let p = ind.idx;
   const s = line.s;
   if (s.charCodeAt(p) !== 91) return null; // [
-  // label: find matching ] (no nesting, escapes allowed)
-  let j = p + 1, label = '';
-  while (j < s.length) {
-    const ch = s.charCodeAt(j);
-    if (ch === 92 && j + 1 < s.length) { label += s[j + 1]; j += 2; continue; }
-    if (ch === 93) break;
-    label += s[j]; j++;
+  // label: find matching ] (escapes allowed); the label may span lines
+  let label = '', cur = i, j = p + 1, ls = s;
+  let closed = false;
+  while (!closed) {
+    while (j < ls.length) {
+      const ch = ls.charCodeAt(j);
+      if (ch === 92 && j + 1 < ls.length) { label += ls[j + 1]; j += 2; continue; }
+      if (ch === 93) { closed = true; break; }
+      label += ls[j]; j++;
+    }
+    if (closed) break;
+    if (cur + 1 >= lines.length) return null;
+    cur++; ls = lines[cur].s; j = 0;
+    label += '\n';
+    if (isBlank(ls)) return null; // a blank line ends the label
   }
-  if (j >= s.length || label.length === 0 || label.length > 999) return null;
+  if (label.length === 0 || label.length > 999) return null;
   j++; // past ]
-  if (s.charCodeAt(j) !== 58) return null; // :
+  if (ls.charCodeAt(j) !== 58) return null; // :
   j++;
-  // skip spaces/tabs (and at most one newline)
-  let cur = i;
-  let rest = s.slice(j);
-  // skip whitespace; if line ends, try the next line
+  // skip spaces/tabs (and at most one newline) to the destination
+  let rest = ls.slice(j);
   while (true) {
     let k = 0;
     while (k < rest.length && isSpace(rest.charCodeAt(k))) k++;
     if (k < rest.length) { rest = rest.slice(k); break; }
     if (cur + 1 >= lines.length) return null;
     cur++; rest = lines[cur].s;
-    // the continuation line must not be blank (a blank line ends the def)
     if (isBlank(rest)) return null;
   }
   // destination: <...> or bare
@@ -149,11 +154,15 @@ function parseDef(lines, i) {
     if (k >= rest.length) return null;
     rest = rest.slice(k + 1);
   } else {
-    // bare destination: no spaces, balanced parens, escapes allowed
+    // bare destination: no spaces, balanced parens; only \+punct unescapes
     let k = 0, depth = 0;
     while (k < rest.length) {
       const ch = rest.charCodeAt(k);
-      if (ch === 92 && k + 1 < rest.length) { dest += rest[k + 1]; k += 2; continue; }
+      if (ch === 92 && k + 1 < rest.length) {
+        if (isPunct(rest.charCodeAt(k + 1))) { dest += rest[k + 1]; k += 2; }
+        else { dest += rest[k] + rest[k + 1]; k += 2; }
+        continue;
+      }
       if (ch === 32 || ch === 9) break;
       if (ch === 40) depth++;
       else if (ch === 41) { if (depth === 0) break; depth--; }
@@ -162,46 +171,78 @@ function parseDef(lines, i) {
     if (dest.length === 0) return null;
     rest = rest.slice(k);
   }
-  // optional title on this line or the next
+  // optional title: must be preceded by whitespace, on this line or the next
   let title = null, next = cur;
-  let t = rest;
-  while (true) {
+  // how much whitespace was skipped after the destination on its own line
+  let wsAfterDest = 0;
+  {
     let k = 0;
-    while (k < t.length && isSpace(t.charCodeAt(k))) k++;
-    if (k >= t.length) {
-      // try the next line for the title
-      if (next + 1 < lines.length && !isBlankL(lines[next + 1])) {
-        const nl = lines[next + 1];
-        const ni = indentOfL(nl);
-        if (ni.cols <= 3) { next++; t = nl.s.slice(ni.idx); continue; }
-      }
-      break;
-    }
-    t = t.slice(k);
-    const q = t.charCodeAt(0);
-    if (q !== 34 && q !== 39 && q !== 40) break; // " ' (
-    const close = q === 40 ? 41 : q;
-    let k2 = 1, tv = '';
-    while (k2 < t.length) {
-      const ch = t.charCodeAt(k2);
-      if (ch === 92 && k2 + 1 < t.length && isPunct(t.charCodeAt(k2 + 1))) { tv += t[k2 + 1]; k2 += 2; continue; }
-      if (ch === close) break;
-      tv += t[k2]; k2++;
-    }
-    if (k2 >= t.length) break;
-    title = tv;
-    t = t.slice(k2 + 1);
-    // after the title only spaces may follow
-    let k3 = 0;
-    while (k3 < t.length && isSpace(t.charCodeAt(k3))) k3++;
-    if (k3 < t.length) return null; // junk after title
-    break;
+    while (k < rest.length && isSpace(rest.charCodeAt(k))) { k++; wsAfterDest++; }
+    rest = rest.slice(k);
   }
-  // after dest/title only spaces may remain on the last line used
-  if (title === null) {
-    let k = 0;
-    while (k < t.length && isSpace(t.charCodeAt(k))) k++;
-    if (k < t.length) return null;
+  const tryTitle = (t) => {
+    // t is the text starting at the title quote; returns {title, rest} or null
+    const q = t.charCodeAt(0);
+    if (q !== 34 && q !== 39 && q !== 40) return null;
+    const close = q === 40 ? 41 : q;
+    let tv = '', pos = 1, tcur = t, tline = next;
+    while (true) {
+      let found = false;
+      while (pos < tcur.length) {
+        const ch = tcur.charCodeAt(pos);
+        if (ch === 92 && pos + 1 < tcur.length && isPunct(tcur.charCodeAt(pos + 1))) { tv += tcur[pos + 1]; pos += 2; continue; }
+        if (ch === close) { found = true; break; }
+        tv += tcur[pos]; pos++;
+      }
+      if (found) return { title: tv, rest: tcur.slice(pos + 1), line: tline };
+      // title continues on the next line
+      if (tline + 1 >= lines.length) return null;
+      tline++;
+      if (isBlankL(lines[tline])) return null;
+      tv += '\n';
+      tcur = lines[tline].s;
+      pos = 0;
+    }
+  };
+  if (rest.length > 0) {
+    // a title on the same line requires whitespace before it (cm-201)
+    if (wsAfterDest === 0) return null;
+    const tt = tryTitle(rest);
+    if (tt) {
+      // after the title only spaces may follow on its last line
+      let k = 0;
+      while (k < tt.rest.length && isSpace(tt.rest.charCodeAt(k))) k++;
+      if (k < tt.rest.length) {
+        // junk after the title on the same line: the def is still valid
+        // without the title (cm-210); do not consume the title line
+        return { label: normalizeLabel(label), href: dest, title: null, next: cur + 1 };
+      }
+      title = tt.title;
+      next = tt.line;
+    } else {
+      return null; // junk after the destination on the same line
+    }
+  } else {
+    // try the next line for a title (only if it starts with a quote)
+    if (next + 1 < lines.length && !isBlankL(lines[next + 1])) {
+      const nl = lines[next + 1];
+      let ti = 0;
+      const ns = nl.s;
+      while (ti < ns.length && isSpace(ns.charCodeAt(ti))) ti++;
+      if (ti < ns.length) {
+        const q = ns.charCodeAt(ti);
+        if (q === 34 || q === 39 || q === 40) {
+          next++;
+          const tt = tryTitle(ns.slice(ti));
+          if (tt) {
+            let k = 0;
+            while (k < tt.rest.length && isSpace(tt.rest.charCodeAt(k))) k++;
+            if (k >= tt.rest.length) { title = tt.title; next = tt.line; }
+            // else: junk after the title -> def valid without the title
+          }
+        }
+      }
+    }
   }
   return { label: normalizeLabel(label), href: dest, title, next: next + 1 };
 }
@@ -484,6 +525,17 @@ function blockStartKind(line, para) {
 }
 
 // ---------- block lexer ----------
+// Does the block content in `inner` (so far) end with an open paragraph?
+// A lazy continuation line can only continue a paragraph, not a fence/code/html/list.
+function endsWithPara(inner, links) {
+  if (inner.length === 0) return false;
+  let last = inner.length - 1;
+  while (last >= 0 && isBlankL(inner[last])) last--;
+  if (last < 0) return false;
+  const nodes = lexBlocks(inner.slice(0, last + 1), links, false, false);
+  return nodes.length > 0 && nodes[nodes.length - 1].t === 'p';
+}
+
 function lexBlocks(lines, links, top, srcEndsNL) {
   const nodes = [];
   let i = 0;
@@ -556,7 +608,7 @@ function lexBlocks(lines, links, top, srcEndsNL) {
       while (j < n) {
         const q = stripQuotePrefix(lines[j]);
         if (q) { inner.push(q); j++; continue; }
-        if (!isBlankL(lines[j]) && inner.length > 0 && !isBlankL(inner[inner.length - 1]) && !blockStartKind(lines[j], true)) {
+        if (!isBlankL(lines[j]) && inner.length > 0 && !isBlankL(inner[inner.length - 1]) && !blockStartKind(lines[j], true) && !hrLine(lines[j]) && endsWithPara(inner, links)) {
           // a lazy setext === line cannot be a heading underline: neutralize it
           // with 4 spaces so it stays paragraph text (marked's behaviour, cm-093)
           if (setextUnderline(lines[j]) === 1) {
@@ -597,16 +649,13 @@ function lexBlocks(lines, links, top, srcEndsNL) {
         } else {
           while (j < n && !isBlankL(lines[j])) { htmlLines.push(lines[j].s); j++; }
         }
-        // trailing newline: types 1-5 keep the newline after the closing line
-        // (unless the block is the last thing and the source has no trailing newline);
-        // types 6-7 keep it only when the block is the last one and the source ends with \n.
+        // trailing newline: the block keeps the newline after its last line when
+        // the next line is non-blank content, or when it is the last block and the
+        // source ends with a newline; a following blank line means no trailing \n.
         let htext = htmlLines.join('\n');
-        const atEnd = j >= n;
-        if (hb.type <= 5) {
-          if (!(top && atEnd && !srcEndsNL)) htext += '\n';
-        } else if (top && atEnd && srcEndsNL) {
-          htext += '\n';
-        }
+        const nextIsContent = j < n && !isBlankL(lines[j]);
+        const atDocEnd = top && j >= n;
+        if (nextIsContent || (atDocEnd && srcEndsNL)) htext += '\n';
         nodes.push({ t: 'html', text: htext });
         i = j;
         continue;
@@ -864,17 +913,19 @@ function parseInlineLink(s, i) {
     let depth = 0;
     while (j < s.length) {
       const ch = s.charCodeAt(j);
-      if (ch === 92 && j + 1 < s.length) { j += 2; continue; }
+      if (ch === 92 && j + 1 < s.length) {
+        if (isPunct(s.charCodeAt(j + 1))) { href += s[j + 1]; j += 2; }
+        else { href += s[j] + s[j + 1]; j += 2; }
+        continue;
+      }
       if (ch === 32 || ch === 9 || ch === 10) break;
       if (ch === 40) depth++;
       else if (ch === 41) { if (depth === 0) break; depth--; }
-      j++;
+      href += s[j]; j++;
     }
-    if (j === start) {
+    if (j === start && href.length === 0) {
       if (s.charCodeAt(j) !== 41) return null;
       href = '';
-    } else {
-      href = s.slice(start, j).replace(UNESCAPE_RE, '$1');
     }
   }
   let k = j;
