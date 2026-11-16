@@ -213,9 +213,8 @@ function parseDef(lines, i) {
       let k = 0;
       while (k < tt.rest.length && isSpace(tt.rest.charCodeAt(k))) k++;
       if (k < tt.rest.length) {
-        // junk after the title on the same line: the def is still valid
-        // without the title (cm-210); do not consume the title line
-        return { label: normalizeLabel(label), href: dest, title: null, next: cur + 1 };
+        // junk after a same-line title: the whole definition is invalid (cm-209)
+        return null;
       }
       title = tt.title;
       next = tt.line;
@@ -232,13 +231,17 @@ function parseDef(lines, i) {
       if (ti < ns.length) {
         const q = ns.charCodeAt(ti);
         if (q === 34 || q === 39 || q === 40) {
+          const saveNext = next;
           next++;
           const tt = tryTitle(ns.slice(ti));
           if (tt) {
             let k = 0;
             while (k < tt.rest.length && isSpace(tt.rest.charCodeAt(k))) k++;
             if (k >= tt.rest.length) { title = tt.title; next = tt.line; }
-            // else: junk after the title -> def valid without the title
+            else next = saveNext; // junk after a next-line title: def valid
+            // without the title; do not consume the title line (cm-210)
+          } else {
+            next = saveNext;
           }
         }
       }
@@ -532,13 +535,25 @@ function blockStartKind(line, para) {
 // ---------- block lexer ----------
 // Does the block content in `inner` (so far) end with an open paragraph?
 // A lazy continuation line can only continue a paragraph, not a fence/code/html/list.
+// Descends into nested blockquotes / list items (cm-250/251).
 function endsWithPara(inner, links) {
   if (inner.length === 0) return false;
   let last = inner.length - 1;
   while (last >= 0 && isBlankL(inner[last])) last--;
   if (last < 0) return false;
   const nodes = lexBlocks(inner.slice(0, last + 1), links, false, false);
-  return nodes.length > 0 && nodes[nodes.length - 1].t === 'p';
+  let cur = nodes;
+  while (cur.length > 0) {
+    const lastNode = cur[cur.length - 1];
+    if (lastNode.t === 'p') return true;
+    if (lastNode.t === 'quote') { cur = lastNode.children; continue; }
+    if (lastNode.t === 'list' && lastNode.items.length > 0) {
+      cur = lastNode.items[lastNode.items.length - 1].children;
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
 function lexBlocks(lines, links, top, srcEndsNL) {
@@ -621,7 +636,8 @@ function lexBlocks(lines, links, top, srcEndsNL) {
           if (setextUnderline(lines[j]) === 1) {
             inner.push(L('    ' + lines[j].s.replace(/^[ \t]+/, '').replace(/[ \t]+$/, ''), 0));
           } else {
-            inner.push(lines[j]);
+            // a lazy line's leading whitespace is stripped (cm-238)
+            inner.push(L(lines[j].s.replace(/^[ \t]+/, ''), 0));
           }
           j++; continue; // lazy continuation (incl. setext underline lines)
         }
@@ -862,11 +878,18 @@ function isWordChar(ch) {
 }
 
 // Find the matching ] for a [ at position i. Returns {end, label} or null.
+// Find the matching ] for a [ at position i. Returns {end, label} or null.
+// Respects nested brackets, code spans, and backslash escapes.
+// The label is returned with backslash escapes processed (like a def label).
 function findLabelEnd(s, i) {
-  let depth = 0, j = i + 1;
+  let depth = 0, j = i + 1, label = '';
   while (j < s.length) {
     const ch = s.charCodeAt(j);
-    if (ch === 92) { j += 2; continue; }
+    if (ch === 92) {
+      if (j + 1 < s.length) { label += s[j + 1]; j += 2; }
+      else { label += s[j]; j++; }
+      continue;
+    }
     if (ch === 96) {
       let n = 0; while (s.charCodeAt(j + n) === 96) n++;
       let k = j + n, found = -1;
@@ -877,16 +900,17 @@ function findLabelEnd(s, i) {
           k += m;
         } else k++;
       }
-      if (found < 0) { j += n; continue; }
+      if (found < 0) { label += '`'.repeat(n); j += n; continue; }
+      label += s.slice(j, found + n);
       j = found + n;
       continue;
     }
-    if (ch === 91) { depth++; j++; continue; }
+    if (ch === 91) { depth++; label += s[j]; j++; continue; }
     if (ch === 93) {
-      if (depth === 0) return { end: j, label: s.slice(i + 1, j) };
-      depth--; j++; continue;
+      if (depth === 0) return { end: j, label };
+      depth--; label += s[j]; j++; continue;
     }
-    j++;
+    label += s[j]; j++;
   }
   return null;
 }
