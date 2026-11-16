@@ -952,9 +952,11 @@ function inlineInto(src, refs, out, noEm, noGfm) {
       if (ih) {
         // an unclosed raw <a> tag suppresses GFM autolinks for the rest
         // of the document (marked's inLink state): "<a href=foo> text
-        // Callback@x" leaves the email plain until a "</a>" (doc-03/06)
+        // Callback@x" leaves the email plain until a "</a>" (doc-03/06).
+        // Only a bare "<a/>" is self-closing; "<a />", "<a href=x/>" and
+        // "<a  />" all open the link (doc-06 line 944 "<a  /><b2").
         const tag = ih[0];
-        if (/^<a(?=[\s>])/i.test(tag) && !/\/>$/.test(tag)) inRawLink = true;
+        if (/^<a(?=[\s>\/])/i.test(tag) && !/^<a\/>$/i.test(tag)) inRawLink = true;
         else if (/^<\/a(?=[\s>])/i.test(tag)) inRawLink = false;
         flush(); out.push(ih[0]); i = ih[1]; continue;
       }
