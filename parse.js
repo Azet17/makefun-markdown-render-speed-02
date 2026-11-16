@@ -436,16 +436,19 @@ function processEmphasis(parts, delims, brackets, bottomNode) {
         if (odd) { op--; continue; }
         // Blocking rule (probed): the inner closer IMMEDIATELY before this
         // closer, which could also open, whose inner opener could NOT
-        // close, and whose run length + this opener's length is a multiple
-        // of 3, blocks the match — e.g. `*a **b**c*` leaves the outer `*`
-        // literal (2+1=3, inner opener `**` cannot close), while
+        // close, whose run is at least as long as this opener, and whose
+        // run length + this opener's length is a multiple of 3, blocks
+        // the match — e.g. `*a **b**c*` leaves the outer `*` literal
+        // (2+1=3, inner opener `**` cannot close), while
         // `*foo**bar**baz*` forms it (inner opener `**` CAN close),
-        // `*a *b*c*` (1+1=2), `*a **b** c*` (inner closer cannot open)
-        // and `*a **b**c** d*` (another delimiter intervenes) all form it.
+        // `*a *b*c*` (1+1=2), `*a **b** c*` (inner closer cannot open),
+        // `*a **b**c** d*` (another delimiter intervenes) and
+        // `**by command *tool*one***` (inner `*` shorter than outer `**`)
+        // all form it.
         let blocked = false;
         if (cur - 1 > op) {
           const e = delims[cur - 1];
-          if (e.wasCloser && e.ch === closer.ch && e.matchOpen && !e.matchOpenerClose && ((e.matchLen + o.len) % 3 === 0)) blocked = true;
+          if (e.wasCloser && e.ch === closer.ch && e.matchOpen && !e.matchOpenerClose && e.matchLen >= o.len && ((e.matchLen + o.len) % 3 === 0)) blocked = true;
         }
         if (blocked) { op--; continue; }
         found = op; break;
