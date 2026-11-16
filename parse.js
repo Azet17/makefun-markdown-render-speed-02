@@ -15,7 +15,7 @@ function isSpaceCode(c) {
 function isAsciiLetter(c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122); }
 function isAsciiDigit(c) { return c >= 48 && c <= 57; }
 function isAsciiAlnum(c) { return isAsciiLetter(c) || isAsciiDigit(c); }
-const PUNCT_RE = /^\p{P}$/u;
+const PUNCT_RE = /^[\p{P}\p{S}]$/u;
 function isPunctCode(c) {
   // ASCII punctuation only (backslash escapes, link parsing). Non-ASCII
   // punctuation is NOT escapable: \<non-ascii> keeps the backslash.
@@ -23,8 +23,9 @@ function isPunctCode(c) {
   return (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126);
 }
 function isUniPunctCode(c) {
-  // Unicode punctuation (flanking rules for emphasis). ASCII punctuation is
-  // also Unicode punctuation, so the regex covers both.
+  // Unicode punctuation for flanking rules: CommonMark counts both P
+  // (punctuation) and S (symbol) categories — so £/€/$ are punctuation.
+  // ASCII punctuation is also Unicode punctuation, so the regex covers both.
   if (c < 128) return isPunctCode(c);
   return PUNCT_RE.test(String.fromCharCode(c));
 }
@@ -389,18 +390,24 @@ function processEmphasis(parts, delims, brackets, bottomNode) {
           if (o.len !== closer.len) { op--; continue; }
           found = op; break;
         }
-        const odd = closer.open && o.close && ((o.len + closer.len) % 3 === 0) && (o.len % 3 !== 0 || closer.len % 3 !== 0);
+        // Odd-match rule (CommonMark): if EITHER delimiter can both open
+        // and close, the sum of the run lengths must not be a multiple of
+        // 3 unless both lengths are multiples of 3.
+        const canBoth = (o.open && o.close) || (closer.open && closer.close);
+        const odd = canBoth && ((o.len + closer.len) % 3 === 0) && !(o.len % 3 === 0 && closer.len % 3 === 0);
         if (odd) { op--; continue; }
         // Blocking rule (probed): the inner closer IMMEDIATELY before this
-        // closer, which could also open and whose run length + this
-        // opener's length is a multiple of 3, blocks the match — e.g.
-        // `*a **b**c*` leaves the outer `*` literal (2+1=3), while
+        // closer, which could also open, whose inner opener could NOT
+        // close, and whose run length + this opener's length is a multiple
+        // of 3, blocks the match — e.g. `*a **b**c*` leaves the outer `*`
+        // literal (2+1=3, inner opener `**` cannot close), while
+        // `*foo**bar**baz*` forms it (inner opener `**` CAN close),
         // `*a *b*c*` (1+1=2), `*a **b** c*` (inner closer cannot open)
         // and `*a **b**c** d*` (another delimiter intervenes) all form it.
         let blocked = false;
         if (cur - 1 > op) {
           const e = delims[cur - 1];
-          if (e.wasCloser && e.ch === closer.ch && e.matchOpen && ((e.matchLen + o.len) % 3 === 0)) blocked = true;
+          if (e.wasCloser && e.ch === closer.ch && e.matchOpen && !e.matchOpenerClose && ((e.matchLen + o.len) % 3 === 0)) blocked = true;
         }
         if (blocked) { op--; continue; }
         found = op; break;
@@ -413,7 +420,7 @@ function processEmphasis(parts, delims, brackets, bottomNode) {
     const oi = parts.indexOf(opener.node);
     const ci = parts.indexOf(closer.node);
     // record that this closer was used (for the blocking rule above)
-    closer.wasCloser = true; closer.matchLen = closer.len; closer.matchOpen = closer.open;
+    closer.wasCloser = true; closer.matchLen = closer.len; closer.matchOpen = closer.open; closer.matchOpenerClose = opener.close;
     // trim the delimiter runs: opener loses `use` chars from its end,
     // closer loses `use` chars from its start
     opener.node.s = opener.node.s.slice(0, opener.node.s.length - use);
@@ -1268,9 +1275,11 @@ function parseBlocks(lines, ctx, opts) {
     const hb = htmlBlockStart(text);
     if (hb && hb.type <= 5) return true;
     if (hb && hb.type === 6 && !isRawCloseTag(text)) return true;
-    // a list marker interrupts a paragraph only if the item is non-empty
+    // a list marker interrupts a paragraph only if the item is non-empty;
+    // an ORDERED list interrupts only when it starts with 1 (cm-304:
+    // `14.` after a paragraph line stays paragraph text)
     const lm = listMarker(text);
-    if (lm && !lm.empty) return true;
+    if (lm && !lm.empty && (!lm.ordered || lm.start === 1)) return true;
     if (stripBlockquote(text) !== null) return true;
     return false;
   }
@@ -1460,6 +1469,9 @@ function parseBlocks(lines, ctx, opts) {
             content.push(ct);
             i++;
           }
+          // a fenced code block drops exactly one trailing blank line
+          // (probed: `a\n\n\n` -> `a\n\n`, `a\n\n` -> `a\n`)
+          if (content.length && /^[ \t]*$/.test(content[content.length - 1])) content.pop();
           addBlock({ kind: 'fence', text: content.join('\n') + (content.length ? '\n' : ''), info });
           continue;
         }
@@ -1567,8 +1579,9 @@ function parseBlocks(lines, ctx, opts) {
     // list
     const lm = cols <= 3 ? listMarker(text) : null;
     // an empty list item cannot interrupt a paragraph: it stays a
-    // paragraph continuation line
-    if (lm && !(para && lm.empty)) {
+    // paragraph continuation line; an ordered list interrupts a paragraph
+    // only when it starts with 1 (cm-304)
+    if (lm && !(para && lm.empty) && !(para && lm.ordered && lm.start !== 1)) {
       closePara();
       const items = [];
       let ordered = lm.ordered;
