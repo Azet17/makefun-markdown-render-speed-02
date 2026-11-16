@@ -1519,7 +1519,12 @@ function parseBlocks(lines, ctx, opts) {
       let delim = lm.delim;
       let bullet = lm.bullet;
       const leadCols = lm.leadCols;
-      const sameLevel = (nm) => nm && nm.ordered === ordered && nm.leadCols === leadCols && (ordered ? nm.delim === delim : nm.bullet === bullet);
+      // same level: same type, and the marker column is below the CURRENT
+      // (most recent) item's content indent — so an outdented following
+      // item stays in the list, while a more-indented one nests under the
+      // previous item (probed doc-03 pattern).
+      let curContentIndent = lm.contentIndent;
+      const sameLevel = (nm) => nm && nm.ordered === ordered && nm.leadCols < curContentIndent && (ordered ? nm.delim === delim : nm.bullet === bullet);
       let j = i;
       let loose = false;
       while (j < n) {
@@ -1547,6 +1552,7 @@ function parseBlocks(lines, ctx, opts) {
         if (sameLevel(nm)) {
           // new item at this level
           const contentIndent = nm.contentIndent;
+          curContentIndent = contentIndent;
           const sub = [];
           sub.push({ text: stripListFirstLine(lt, nm), lazy: false });
           j++;
