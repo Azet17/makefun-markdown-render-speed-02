@@ -581,19 +581,38 @@ function tryAutolink(text, i, prev, ctx) {
     if (host.length === 0 || !/^[A-Za-z0-9._~%:@\-]+$/.test(host)) return null;
     return { text: link, href: link, end: i + link.length };
   }
-  // mailto:
-  m = /^mailto:[^\s<>\x00-\x1f]+/i.exec(rest);
+  // mailto: — capture just the address (the regex stops at trailing junk
+  // like `/` or `.`); a trailing `-` is part of the domain (invalid) and
+  // a `_` right after means the word continues (gfm-632/633)
+  m = /^mailto:([A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+)/i.exec(rest);
   if (m) {
-    const email = m[0].slice(7);
-    if (/^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$/.test(email)) {
-      return { text: m[0], href: m[0], end: i + m[0].length };
+    const email = m[1];
+    if (email.endsWith('-') || email.endsWith('_')) return null;
+    const after = text[i + m[0].length];
+    if (after === '_') {
+      const hasUnderscoreOpener = ctx.delims && ctx.delims.some((d) => d.active && d.ch === '_' && d.open);
+      if (!hasUnderscoreOpener) return null;
     }
-    return null;
+    return { text: m[0], href: m[0], end: i + m[0].length };
   }
+  // a `mailto:` prefix followed by something that is not a valid address
+  // is not an autolink at all (do not fall through to bare-email inside it)
+  if (/^mailto:/i.test(rest)) return null;
   // bare email
   m = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+/.exec(rest);
   if (m) {
-    return { text: m[0], href: 'mailto:' + m[0], end: i + m[0].length };
+    const email = m[0];
+    // the domain must end with an alphanumeric char: a trailing `-`
+    // makes the address invalid; a `_` immediately after means the
+    // "word" continues — UNLESS that `_` closes an open `_` emphasis
+    // (e.g. `__a b@c.d__` links, but `a b@c.d_` does not) (gfm-632/633)
+    if (email.endsWith('-') || email.endsWith('_')) return null;
+    const after = text[i + email.length];
+    if (after === '_') {
+      const hasUnderscoreOpener = ctx.delims && ctx.delims.some((d) => d.active && d.ch === '_' && d.open);
+      if (!hasUnderscoreOpener) return null;
+    }
+    return { text: email, href: 'mailto:' + email, end: i + email.length };
   }
   return null;
 }
@@ -682,6 +701,11 @@ function inlineParse(text, ctx) {
       if (c === 95) {
         open = left && (!right || isUniPunctCode(before));
         close = right && (!left || isUniPunctCode(after));
+      } else if (c === 126) {
+        // strikethrough: only runs of 1-2 tildes form <del>; 3+ tildes
+        // stay literal (gfm-493: `~~~not~~~` is not struck through)
+        open = m <= 2 ? left : false;
+        close = m <= 2 ? right : false;
       } else {
         open = left;
         close = right;
@@ -816,6 +840,7 @@ function inlineParse(text, ctx) {
       }
       if (tryIt) {
         ctx.brackets = brackets;
+        ctx.delims = delims;
         const prev = i > 0 ? text.charCodeAt(i - 1) : -1;
         const al = tryAutolink(text, i, prev, ctx);
         if (al) {
@@ -1408,7 +1433,9 @@ function parseBlocks(lines, ctx, opts) {
           const header = headerCells;
           const rows = [];
           i++;
-          while (i < n && !isBlank(lines[i].text) && !lines[i].lazy) {
+          // a body row must contain a pipe; a line without one (e.g. a
+          // blockquote `> bar`) ends the table (gfm-201)
+          while (i < n && !isBlank(lines[i].text) && !lines[i].lazy && lines[i].text.includes('|')) {
             const rc = splitRow(lines[i].text);
             while (rc.length < header.length) rc.push('');
             rows.push(rc.slice(0, header.length));
@@ -1834,20 +1861,25 @@ function renderBlocks(blocks, ctx, tightList) {
           renderParts(parts, out);
           out.push('</th>\n');
         }
-        out.push('</tr>\n</thead>\n<tbody>');
-        for (const row of b.rows) {
-          out.push('<tr>\n');
-          for (let c = 0; c < row.length; c++) {
-            const al = b.aligns[c];
-            const attr = al ? ' align="' + al + '"' : '';
-            out.push('<td' + attr + '>');
-            const parts = inlineParse(row[c], ctx);
-            renderParts(parts, out);
-            out.push('</td>\n');
+        out.push('</tr>\n</thead>\n');
+        // a table with no body rows has no <tbody> at all (gfm-205)
+        if (b.rows.length > 0) {
+          out.push('<tbody>');
+          for (const row of b.rows) {
+            out.push('<tr>\n');
+            for (let c = 0; c < row.length; c++) {
+              const al = b.aligns[c];
+              const attr = al ? ' align="' + al + '"' : '';
+              out.push('<td' + attr + '>');
+              const parts = inlineParse(row[c], ctx);
+              renderParts(parts, out);
+              out.push('</td>\n');
+            }
+            out.push('</tr>\n');
           }
-          out.push('</tr>\n');
+          out.push('</tbody>');
         }
-        out.push('</tbody></table>\n');
+        out.push('</table>\n');
         break;
       }
     }
