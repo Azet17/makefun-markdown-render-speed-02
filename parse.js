@@ -872,9 +872,9 @@ function plainTextOf(labelRaw, refs) {
   return escAttr(html);
 }
 
-function inlineStr(src, refs, noEm) {
+function inlineStr(src, refs, noEm, noGfm) {
   const out = [];
-  inlineInto(src, refs, out, noEm);
+  inlineInto(src, refs, out, noEm, noGfm);
   return out.join('');
 }
 
@@ -884,7 +884,7 @@ function inlineStr(src, refs, noEm) {
 // The nested-link check snapshots this before rendering a label.
 let mdLinkCount = 0;
 
-function inlineInto(src, refs, out, noEm) {
+function inlineInto(src, refs, out, noEm, noGfm) {
   const n = src.length;
   let i = 0;
   const delims = []; // delimiter records {ch,len,open,close,openTags,closeTags,pos}
@@ -973,7 +973,7 @@ function inlineInto(src, refs, out, noEm) {
             // markdown-link count before rendering the label; an autolink
             // inside the label does not block the outer link (doc-08/09)
             const linksBefore = mdLinkCount;
-            const labelHtml = isImg ? null : inlineStr(labelRaw, refs, false);
+            const labelHtml = isImg ? null : inlineStr(labelRaw, refs, false, true);
             if (!isImg && labelHtml !== null && mdLinkCount !== linksBefore) {
               // fall through to the literal '[' handling below; do NOT take
               // the suppress-emphasis path (the inner emphasis must form)
@@ -1010,7 +1010,7 @@ function inlineInto(src, refs, out, noEm) {
               i = refEnd + 1; continue;
             }
             const linksBefore = mdLinkCount;
-            const labelHtml = inlineStr(labelRaw, refs, false);
+            const labelHtml = inlineStr(labelRaw, refs, false, true);
             if (mdLinkCount === linksBefore) {
               flush();
               mdLinkCount++;
@@ -1027,7 +1027,7 @@ function inlineInto(src, refs, out, noEm) {
         const ref = refs.get(normalizeRef(labelRaw));
         if (ref) {
           const linksBefore = mdLinkCount;
-          const labelHtml = isImg ? null : inlineStr(labelRaw, refs, false);
+          const labelHtml = isImg ? null : inlineStr(labelRaw, refs, false, true);
           if (isImg || mdLinkCount === linksBefore) {
             flush();
             if (isImg) {
@@ -1091,8 +1091,10 @@ function inlineInto(src, refs, out, noEm) {
       else { flush(); out.push('\n'); }
       i++; continue;
     }
-    // GFM autolink / email (only at a word start)
-    if (c === 119 || c === 104 || c === 102 || isAlphaNum(c)) {
+    // GFM autolink / email (only at a word start). GFM autolinks are
+    // suppressed inside a link label (doc-01: a bare URL in a label stays
+    // plain text); angle-bracket autolinks still form there (above).
+    if (!noGfm && (c === 119 || c === 104 || c === 102 || isAlphaNum(c))) {
       const prev = i > 0 ? src.charCodeAt(i - 1) : -1;
       const g = parseGfmAutolink(src, i, prev);
       if (g) { flush(); out.push(g[0]); i = g[1]; continue; }
