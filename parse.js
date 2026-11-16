@@ -1696,8 +1696,11 @@ function parseBlocks(lines, ctx, opts) {
           }
           // trailing newline: dropped when the block is followed by a blank
           // line, or when it ends at a container boundary (only a true
-          // document-EOF end keeps it)
-          const trail = (i < n && isBlank(lines[i].text)) ? '' : (i >= n ? (isTop ? '\n' : '') : '\n');
+          // document-EOF end keeps it). A tab-only line is NOT a blank
+          // line here (probed: `<!--\na\n-->\n\t\nbar` keeps the `\n`);
+          // only a truly empty or spaces-only line drops it.
+          const nextIsBlank = i < n && (lines[i].text === '' || /^[ ]*$/.test(lines[i].text));
+          const trail = nextIsBlank ? '' : (i >= n ? (isTop ? '\n' : '') : '\n');
           addBlock({ kind: 'html', text: hlines.join('\n') + trail });
         } else {
           while (i < n && !isBlank(lines[i].text)) {
