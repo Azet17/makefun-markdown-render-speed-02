@@ -313,7 +313,9 @@ function fenceEnd(line, fence) {
 // A line is {s, c}: s is the (materialized) text, c is the original column of s[0].
 // Tab widths are always computed from the original column, so a partially consumed
 // tab keeps its original width (this is what makes cm-005/006/007 come out right).
-function L(s, c) { return { s, c }; }
+// `lazy` marks a line included as a paragraph continuation (blockquote/list
+// lazy line): it can never start a new block (cm-238).
+function L(s, c, lazy) { return { s, c, lazy: !!lazy }; }
 function isBlankL(l) { return isBlank(l.s); }
 function colAtL(l, i) {
   let col = l.c;
@@ -505,6 +507,7 @@ function isDelimiterRow(line) {
 // What kind of block (if any) starts at this line? Used for paragraph interruption.
 // Returns a string kind or null. `para` = true when called from inside a paragraph.
 function blockStartKind(line, para) {
+  if (line.lazy) return null; // a lazy continuation line is paragraph text
   const ind = indentOfL(line);
   const s = line.s;
   if (isBlankL(line)) return null;
@@ -634,10 +637,10 @@ function lexBlocks(lines, links, top, srcEndsNL) {
           // a lazy setext === line cannot be a heading underline: neutralize it
           // with 4 spaces so it stays paragraph text (marked's behaviour, cm-093)
           if (setextUnderline(lines[j]) === 1) {
-            inner.push(L('    ' + lines[j].s.replace(/^[ \t]+/, '').replace(/[ \t]+$/, ''), 0));
+            inner.push(L('    ' + lines[j].s.replace(/^[ \t]+/, '').replace(/[ \t]+$/, ''), 0, true));
           } else {
             // a lazy line's leading whitespace is stripped (cm-238)
-            inner.push(L(lines[j].s.replace(/^[ \t]+/, ''), 0));
+            inner.push(L(lines[j].s.replace(/^[ \t]+/, ''), 0, true));
           }
           j++; continue; // lazy continuation (incl. setext underline lines)
         }
@@ -750,6 +753,9 @@ function parseList(lines, start, links) {
       while (j < lines.length) {
         const l = lines[j];
         if (isBlankL(l)) {
+          // an empty item followed by a blank line is empty: no content
+          // may follow (cm-280)
+          if (lc.empty) break;
           let k = j + 1;
           while (k < lines.length && isBlankL(lines[k])) k++;
           if (k >= lines.length) break;
@@ -759,6 +765,16 @@ function parseList(lines, start, links) {
           break;
         }
         if (indentOfL(l).cols >= lc.contentIndent) { itemLines.push(stripColsL(l, lc.contentIndent)); j++; continue; }
+        // a lazy paragraph continuation: a plain-text line (no block start,
+        // not a list marker, not an hr) while the item so far ends with a
+        // paragraph (cm-290/291). Indent >= 4 loses 4 columns (code-indent
+        // quirk); indent < 4 keeps its spaces.
+        if (!hrLine(l) && !listMarker(l) && blockStartKind(l, true) === null && endsWithPara(itemLines, links)) {
+          const ind = indentOfL(l);
+          if (ind.cols >= 4) itemLines.push(L(stripColsL(l, 4).s, 0, true));
+          else itemLines.push(L(l.s, 0, true));
+          j++; continue;
+        }
         break;
       }
       let task = false, checked = false;
