@@ -891,8 +891,8 @@ function inlineInto(src, refs, out, noEm, noGfm) {
   let delimSeq = 0; // stable position of each delimiter in the text
   let buf = '';
   const flush = () => { if (buf) { out.push(escText(buf)); buf = ''; } };
-  const pushDelim = (ch, len, open, close) => {
-    const rec = { ch, len, open, close, openTags: [], closeTags: [], pos: delimSeq++ };
+  const pushDelim = (ch, len, open, close, srcPos) => {
+    const rec = { ch, len, open, close, openTags: [], closeTags: [], pos: delimSeq++, srcPos };
     flush();
     out.push(rec);
     delims.push(rec);
@@ -1073,7 +1073,7 @@ function inlineInto(src, refs, out, noEm, noGfm) {
       } else {
         open = fl.left; close = fl.right;
       }
-      pushDelim(c, len, open, close);
+      pushDelim(c, len, open, close, i);
       i = j; continue;
     }
     // newline: soft or hard break
@@ -1146,6 +1146,24 @@ function inlineInto(src, refs, out, noEm, noGfm) {
           if (sp[0] < opener.pos && opener.pos < sp[1] && closer.pos > sp[1]) { crossed = true; break; }
         }
         if (crossed) { oi--; continue; }
+        // A strong span whose opener cannot close and whose closer can
+        // open blocks an outer same-char emphasis whose opener is before
+        // the span and whose closer is after it: "*a **b**c*" forms no
+        // outer em, but "*a **b** c*" (space after the inner closer) and
+        // "_a **b**c_" (different char) do form it, and "*foo**bar**baz*"
+        // (cm-411, inner opener can close) does form it.
+        // (only an outer em is blocked, not an outer strong: the
+        // "**parse**" span blocks "*input ... parse*" but not the
+        // "**removes ... release**" strong around it — doc-11)
+        let blocked = false;
+        if (!(opener.len >= 2 && closer.len >= 2)) {
+          for (let s = 0; s < emSpans.length; s++) {
+            const sp = emSpans[s];
+            if (sp[2] === closer.ch && sp[3] && !sp[4] && sp[5] === 2 &&
+                opener.pos < sp[0] && closer.pos > sp[1]) { blocked = true; break; }
+          }
+        }
+        if (blocked) { oi--; continue; }
         // odd-match rule (Appendix A rule 9): if EITHER delimiter can
         // both open and close, the sum of the run lengths must not be a
         // multiple of 3 unless both are multiples of 3
@@ -1169,9 +1187,11 @@ function inlineInto(src, refs, out, noEm, noGfm) {
           : (closer.ch === CC_TILDE ? '</del>' : '</em>');
         opener.openTags.unshift(tagOpen);
         closer.closeTags.push(tagClose);
+        closer.pairOpenPos = opener.pos;
+        const spanCloseLen = closer.len;
         opener.len -= use;
         closer.len -= use;
-        emSpans.push([opener.pos, closer.pos]);
+        emSpans.push([opener.pos, closer.pos, closer.ch, closer.open, opener.close, spanCloseLen]);
         if (opener.len === 0) { delims.splice(oi, 1); di--; oi--; continue; }
         // opener still has length: re-check the same opener
         continue;
@@ -1183,7 +1203,24 @@ function inlineInto(src, refs, out, noEm, noGfm) {
   for (let t = 0; t < out.length; t++) {
     const el = out[t];
     if (el && typeof el === 'object') {
-      out[t] = el.closeTags.join('') + String.fromCharCode(el.ch).repeat(el.len) + el.openTags.join('');
+      const leftover = String.fromCharCode(el.ch).repeat(el.len);
+      // A closer run partially consumed by a strong/em leaves literal
+      // delimiters. The leftover stays INSIDE the emphasis ("c*</strong>")
+      // when an inner emphasis span inside this pair has a closer that
+      // can open (its closer is directly followed by a word char, e.g.
+      // "**a *b*xyz***"); otherwise it falls outside ("</strong>*").
+      // (only for a strong pair: an em pair like "*a *b*c**" leaves the
+      // leftover outside — doc-27 — while a strong like "**a *b*c***"
+      // keeps it inside — doc-11)
+      let pre = '';
+      if (el.len > 0 && el.closeTags.length > 0 && el.pairOpenPos !== undefined &&
+          el.closeTags.includes('</strong>')) {
+        for (let s = 0; s < emSpans.length; s++) {
+          const sp = emSpans[s];
+          if (sp[3] && sp[0] > el.pairOpenPos && sp[1] < el.pos) { pre = leftover; break; }
+        }
+      }
+      out[t] = pre + el.closeTags.join('') + (pre ? '' : leftover) + el.openTags.join('');
     }
   }
   return out;
@@ -2013,7 +2050,8 @@ function parseList(lines, i, refs) {
       if (k >= lines.length) break;
       const nm = listItemMatch(lines[k]);
       if (nm && nm.type === listType && nm.marker === marker &&
-          lineIndent(lines[k]).col <= baseIndent + 3) {
+          lineIndent(lines[k]).col <= baseIndent + 3 &&
+          lineIndent(lines[k]).col < cur.contentIndent) {
         loose = true;
         j = k;
         continue;
