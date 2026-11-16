@@ -1416,7 +1416,11 @@ function parseBlocks(lines, ctx, opts) {
     if (cols > 3) return false;
     const s = text.slice(index);
     if (/^#{1,6}(\s|$)/.test(s)) return true;
-    if (/^(`{3,}|~{3,})/.test(s)) return true;
+    // a fence line interrupts — but a BACKTICK fence whose info string
+    // contains a backtick is not a fence at all (probed doc-05/21:
+    // ` ```inner backticks``` ` is a code span inside the paragraph)
+    const fm = /^(`{3,}|~{3,})(.*)$/.exec(s);
+    if (fm && !(fm[1].charAt(0) === '`' && fm[2].includes('`'))) return true;
     if (/^(\*\s*){3,}$/.test(s) || /^(-\s*){3,}$/.test(s) || /^(_\s*){3,}$/.test(s)) return true;
     // only HTML block types 1-5 can interrupt a paragraph (6-7 cannot),
     // except a type-6 block-tag close (not a raw-text close) CAN interrupt
