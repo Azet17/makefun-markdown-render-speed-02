@@ -1204,6 +1204,29 @@ function stripIndent(line, cols) {
   return line.slice(idx);
 }
 
+// strip `cols` columns, but a tab that starts exactly at the boundary is
+// expanded to spaces (its remainder past the boundary). Used for list-item
+// content stripping (doc-05: "   \tindented" stripped by 3 leaves
+// " indented"); indented-code stripping keeps the tab (stripIndent above).
+function stripIndentExpandTab(line, cols) {
+  let col = 0, idx = 0;
+  while (idx < line.length && col < cols) {
+    const c = line.charCodeAt(idx);
+    if (c === 32) { col++; idx++; }
+    else if (c === 9) {
+      const w = 4 - (col % 4);
+      if (col + w <= cols) { col += w; idx++; }
+      else return ' '.repeat(col + w - cols) + line.slice(idx + 1);
+    }
+    else break;
+  }
+  if (idx < line.length && col === cols && line.charCodeAt(idx) === 9) {
+    const w = 4 - (col % 4);
+    return ' '.repeat(w) + line.slice(idx + 1);
+  }
+  return line.slice(idx);
+}
+
 function fenceMatch(line) {
   const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
   if (!m) return null;
@@ -1923,7 +1946,7 @@ function parseList(lines, i, refs) {
     // nested list etc.), even if it looks like a marker — only a line less
     // indented than the content indent can start a new item of this list
     if (cur && !isBlank(line) && lineIndent(line).col >= cur.contentIndent) {
-      const stripped = stripIndent(line, cur.contentIndent);
+      const stripped = stripIndentExpandTab(line, cur.contentIndent);
       cur.lines.push(stripped);
       // update the fence state from this content line
       if (fence) {
@@ -1994,7 +2017,7 @@ function parseList(lines, i, refs) {
         // nested item), the blank is inside the nested list (which decides
         // its own looseness). Otherwise the blank separates direct
         // children — including a deeper-indented code block (cm-270).
-        const sub = stripIndent(lines[k], cur.contentIndent);
+        const sub = stripIndentExpandTab(lines[k], cur.contentIndent);
         const itemHasNested = cur.lines.some(l => listItemMatch(l));
         const nextIsNestedItem = !!listItemMatch(sub);
         if (!(itemHasNested && (nextIsNestedItem ||
