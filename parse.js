@@ -631,12 +631,15 @@ function trimGfmEnd(s) {
       if (c === 63 || c === 33 || c === 46 || c === 44 || c === 59 || c === 58 ||
           c === 34 || c === 39 || c === 42 || c === 95 || c === 126) { end--; changed = true; continue; }
       if (c === 41) {
+        // keep the trailing ")" only when an unmatched "(" precedes it
+        // (stack depth > 0 just before it): "a)](b)" keeps the final
+        // ")" but "a)b)" and "a(b))" drop theirs (doc-12)
         let depth = 0;
-        for (let t = 0; t < end; t++) {
+        for (let t = 0; t < end - 1; t++) {
           if (s.charCodeAt(t) === 40) depth++;
-          else if (s.charCodeAt(t) === 41) depth--;
+          else if (s.charCodeAt(t) === 41 && depth > 0) depth--;
         }
-        if (depth < 0) { end--; changed = true; continue; }
+        if (depth === 0) { end--; changed = true; continue; }
         break;
       }
       if (c === 93 || c === 125) { end--; changed = true; continue; }
@@ -1947,6 +1950,15 @@ function parseTable(lines, i, headerLine, refs) {
   let j = i + 1;
   while (j < lines.length) {
     const rl = lines[j];
+    // a whitespace-only line holding a tab that expands to exactly 4
+    // columns is an empty table row (doc-07), not a table-ending blank —
+    // but only when more content follows it (a trailing tab at EOF is
+    // just trailing whitespace)
+    if (/^[ \t]*\t[ \t]*$/.test(rl) && expandTabs(rl).length === 4 && j + 1 < lines.length) {
+      rows.push([]);
+      j++;
+      continue;
+    }
     if (isBlank(rl)) break;
     if (isBlockStart(rl)) break;
     let r = rl.trim();
@@ -2195,7 +2207,12 @@ function parse(src) {
         lines.push(raw);
       }
     } else {
-      lines.push(exp);
+      // A whitespace-only line holding a tab stays raw: marked treats a
+      // bare "\t" (or " \t") after a table as an empty table row, while a
+      // spaces-only blank line ends the table (doc-07). Keeping the tab
+      // lets parseTable tell them apart.
+      if (/^[ \t]*\t[ \t]*$/.test(raw)) lines.push(raw);
+      else lines.push(exp);
       const fm = fenceMatch(exp);
       if (fm) fence = { char: fm.char, len: fm.len };
     }
