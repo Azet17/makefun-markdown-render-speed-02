@@ -1462,8 +1462,15 @@ function parseBlocks(lines, ctx, opts) {
           i++;
           // a body row is any non-blank line that does not start a
           // different block (a `> ` blockquote ends the table, gfm-201);
-          // a row without a pipe is a single cell, padded (gfm-202)
-          while (i < n && !isBlank(lines[i].text) && !lines[i].lazy && stripBlockquote(lines[i].text) === null) {
+          // a row without a pipe is a single cell, padded (gfm-202). A
+          // line of ONLY tabs is an empty row (probed); a spaces-only or
+          // truly empty line ends the table.
+          while (i < n && (!isBlank(lines[i].text) || /^\t+$/.test(lines[i].text)) && !lines[i].lazy && stripBlockquote(lines[i].text) === null) {
+            if (/^\t+$/.test(lines[i].text)) {
+              rows.push(new Array(header.length).fill(''));
+              i++;
+              continue;
+            }
             const rc = splitRow(lines[i].text);
             while (rc.length < header.length) rc.push('');
             rows.push(rc.slice(0, header.length));
