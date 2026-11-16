@@ -158,11 +158,13 @@ function normalizeLabel(s) {
   return unescapeStr(s).replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-// Does a parts list contain a link node (t=4) anywhere, recursing into
-// emphasis/strong/del children? A link label may not contain a link.
+// Does a parts list contain a BRACKET link node (t=4, not an autolink)
+// anywhere, recursing into emphasis/strong/del children? A link label may
+// not contain a bracket link, but autolinks (<...>/GFM) inside a label are
+// fine and do not block the outer link.
 function containsLink(parts) {
   for (const p of parts) {
-    if (p.t === 4) return true;
+    if (p.t === 4 && !p.auto) return true;
     if ((p.t === 1 || p.t === 2 || p.t === 3) && p.c && containsLink(p.c)) return true;
   }
   return false;
@@ -502,8 +504,9 @@ function isLabelChar(c) {
 // and the bracket stack (labels suppress autolinks).
 function tryAutolink(text, i, prev, ctx) {
   const n = text.length;
-  // preceding char must be start, whitespace, or * _ ~ (
-  if (!(prev === -1 || prev === 32 || prev === 9 || prev === 10 || prev === 42 || prev === 95 || prev === 126 || prev === 40)) return null;
+  // preceding char must be start, whitespace, or * _ ~ ( < (probed: a GFM
+  // autolink after a literal '<' still forms)
+  if (!(prev === -1 || prev === 32 || prev === 9 || prev === 10 || prev === 42 || prev === 95 || prev === 126 || prev === 40 || prev === 60)) return null;
   if (ctx.inLink.v) return null;
   for (let b = 0; b < ctx.brackets.length; b++) if (ctx.brackets[b].active) return null;
   const rest = text.slice(i);
@@ -721,14 +724,14 @@ function inlineParse(text, ctx) {
       let m = /^<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]+)>/.exec(text.slice(i));
       if (m) {
         flush();
-        parts.push({ t: 4, href: cleanUrl(m[1], true), title: null, c: [{ t: 0, s: escInlineText(m[1]) }] });
+        parts.push({ t: 4, auto: true, href: cleanUrl(m[1], true), title: null, c: [{ t: 0, s: escInlineText(m[1]) }] });
         i += m[0].length;
         continue;
       }
       m = /^<([A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)*)>/.exec(text.slice(i));
       if (m) {
         flush();
-        parts.push({ t: 4, href: 'mailto:' + cleanUrl(m[1], true), title: null, c: [{ t: 0, s: escInlineText(m[1]) }] });
+        parts.push({ t: 4, auto: true, href: 'mailto:' + cleanUrl(m[1], true), title: null, c: [{ t: 0, s: escInlineText(m[1]) }] });
         i += m[0].length;
         continue;
       }
@@ -779,7 +782,7 @@ function inlineParse(text, ctx) {
         const al = tryAutolink(text, i, prev, ctx);
         if (al) {
           flush();
-          parts.push({ t: 4, href: cleanUrl(al.href, true), title: null, c: [{ t: 0, s: escInlineText(al.text) }] });
+          parts.push({ t: 4, auto: true, href: cleanUrl(al.href, true), title: null, c: [{ t: 0, s: escInlineText(al.text) }] });
           i = al.end;
           continue;
         }
