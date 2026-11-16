@@ -5,7 +5,7 @@
 export function parse(src) {
   src = src.replace(/\r\n|\r/g, '\n');
   const links = Object.create(null);
-  const blocks = lexBlocks(splitLines(src), links);
+  const blocks = lexBlocks(splitLines(src), links, true, src.endsWith('\n'));
   return renderBlocks(blocks, links);
 }
 
@@ -217,7 +217,7 @@ function htmlBlockStart(line) {
   if (ind.cols > 3) return null;
   const s = line.s.slice(ind.idx);
   const low = s.toLowerCase();
-  if (/^<(script|pre|style|textarea)(\s|\/|>)/.test(low)) {
+  if (/^<(script|pre|style|textarea)(\s|\/|>|$)/.test(low)) {
     const tag = low.match(/^<(script|pre|style|textarea)/)[1];
     return { type: 1, endRe: new RegExp('</' + tag + '\\s*>', 'i') };
   }
@@ -227,7 +227,7 @@ function htmlBlockStart(line) {
   if (low.startsWith('<![cdata[')) return { type: 5, endRe: /\]\]>/ };
   let m = /^<\/?([a-z][a-z0-9-]*)(\s|\/|>|$)/i.exec(s);
   if (m && BLOCK_TAGS.has(m[1].toLowerCase())) return { type: 6, endRe: null };
-  m = /^<([a-z][a-z0-9-]*)(\s[^>]*)?\/?>/.exec(s) || /^<\/([a-z][a-z0-9-]*)\s*>/.exec(s);
+  m = /^<([a-z][a-z0-9-]*)(\s[^>]*)?\/?>\s*$/i.exec(s) || /^<\/([a-z][a-z0-9-]*)\s*>\s*$/i.exec(s);
   if (m) {
     const name = m[1].toLowerCase();
     if (!VOID_ELEMS.has(name)) return { type: 7, endRe: null };
@@ -484,7 +484,7 @@ function blockStartKind(line, para) {
 }
 
 // ---------- block lexer ----------
-function lexBlocks(lines, links) {
+function lexBlocks(lines, links, top, srcEndsNL) {
   const nodes = [];
   let i = 0;
   const n = lines.length;
@@ -557,7 +557,14 @@ function lexBlocks(lines, links) {
         const q = stripQuotePrefix(lines[j]);
         if (q) { inner.push(q); j++; continue; }
         if (!isBlankL(lines[j]) && inner.length > 0 && !isBlankL(inner[inner.length - 1]) && !blockStartKind(lines[j], true)) {
-          inner.push(lines[j]); j++; continue; // lazy continuation (incl. setext underline lines)
+          // a lazy setext === line cannot be a heading underline: neutralize it
+          // with 4 spaces so it stays paragraph text (marked's behaviour, cm-093)
+          if (setextUnderline(lines[j]) === 1) {
+            inner.push(L('    ' + lines[j].s.replace(/^[ \t]+/, '').replace(/[ \t]+$/, ''), 0));
+          } else {
+            inner.push(lines[j]);
+          }
+          j++; continue; // lazy continuation (incl. setext underline lines)
         }
         break;
       }
@@ -590,7 +597,17 @@ function lexBlocks(lines, links) {
         } else {
           while (j < n && !isBlankL(lines[j])) { htmlLines.push(lines[j].s); j++; }
         }
-        nodes.push({ t: 'html', text: htmlLines.join('\n') });
+        // trailing newline: types 1-5 keep the newline after the closing line
+        // (unless the block is the last thing and the source has no trailing newline);
+        // types 6-7 keep it only when the block is the last one and the source ends with \n.
+        let htext = htmlLines.join('\n');
+        const atEnd = j >= n;
+        if (hb.type <= 5) {
+          if (!(top && atEnd && !srcEndsNL)) htext += '\n';
+        } else if (top && atEnd && srcEndsNL) {
+          htext += '\n';
+        }
+        nodes.push({ t: 'html', text: htext });
         i = j;
         continue;
       }
@@ -708,7 +725,7 @@ function renderBlocks(nodes, links) {
         break;
       }
       case 'hr': out += '<hr>\n'; break;
-      case 'html': out += n.text + '\n'; break;
+      case 'html': out += n.text; break;
       case 'quote': out += '<blockquote>\n' + renderBlocks(n.children, links) + '</blockquote>\n'; break;
       case 'list': {
         const tag = n.ordered ? 'ol' : 'ul';
