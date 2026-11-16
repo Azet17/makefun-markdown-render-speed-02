@@ -889,7 +889,13 @@ function inlineInto(src, refs, out, noEm) {
     if (c === CC_BACKSLASH) {
       if (i + 1 < n) {
         const d = src.charCodeAt(i + 1);
-        if (d === CC_LF) { flush(); out.push('<br>'); i += 2; continue; }
+        if (d === CC_LF) {
+          flush(); out.push('<br>');
+          // strip the next line's leading whitespace (cm-637)
+          let k = i + 2;
+          while (k < n && (src.charCodeAt(k) === 32 || src.charCodeAt(k) === 9)) k++;
+          i = k; continue;
+        }
         if (isPunct(d)) { buf += src[i + 1]; i += 2; continue; }
       }
       buf += '\\'; i++; continue;
@@ -1051,7 +1057,14 @@ function inlineInto(src, refs, out, noEm) {
     if (c === CC_LF) {
       let sp = 0;
       for (let t = buf.length - 1; t >= 0 && buf.charCodeAt(t) === 32; t--) sp++;
-      if (sp >= 2) { buf = buf.slice(0, buf.length - sp); flush(); out.push('<br>'); }
+      if (sp >= 2) {
+        buf = buf.slice(0, buf.length - sp); flush(); out.push('<br>');
+        // after a hard break the next line's leading whitespace is
+        // stripped (cm-636/637: "foo  \n     bar" -> "foo<br>bar")
+        let k = i + 1;
+        while (k < n && (src.charCodeAt(k) === 32 || src.charCodeAt(k) === 9)) k++;
+        i = k; continue;
+      }
       else { flush(); out.push('\n'); }
       i++; continue;
     }
@@ -1290,8 +1303,24 @@ function isBlockStart(line) {
 }
 
 // does a logical line end with an open paragraph (for lazy continuations)?
+// Looks through nested containers (blockquote markers, list items) to the
+// innermost content (cm-292/293: a lazy line must reach a paragraph inside
+// a blockquote inside a list item inside a blockquote).
 function endsOpenPara(line) {
   if (isBlank(line)) return false;
+  // strip leading blockquote markers and recurse into the content
+  const bm = /^ {0,3}> ?/.exec(line);
+  if (bm) return endsOpenPara(line.slice(bm[0].length));
+  // a list item is not an indented code block even at indent 4+ — it is a
+  // lazy paragraph continuation, not a new block (cm-238: "> foo\n    - bar"
+  // keeps "- bar" as paragraph text). listItemMatch refuses indent > 3,
+  // so detect the marker directly here.
+  const m0 = /^ *([*+-]|\d{1,9}[.)])([ \t]+|[ \t]*$)/.exec(line);
+  if (m0) {
+    const after = line.slice(m0[0].length);
+    if (after === '') return false;
+    return endsOpenPara(after);
+  }
   // an indented code line (4+ spaces) is a code block, not a paragraph,
   // so a lazy line cannot continue it
   if (lineIndent(line).col >= 4) return false;
@@ -1688,14 +1717,24 @@ function parseBlocks(lines, refs, tight) {
         if (bm) {
           const s = bl.slice(bm[0].length);
           bqLines.push(s);
-          lastPara = endsOpenPara(s);
+          // lastPara looks through nested ">" markers to the innermost
+          // content: a lazy line must reach the innermost open paragraph
+          // (cm-250/251: "> > > foo" + "bar" -> bar joins the innermost p)
+          let inner = s;
+          let im;
+          while ((im = /^ {0,3}> ?/.exec(inner))) inner = inner.slice(im[0].length);
+          lastPara = endsOpenPara(inner);
           j++; continue;
         }
         if (isBlank(bl)) break;
         // a lazy continuation line: if it is indented 4+ spaces, 4 spaces
-        // are stripped (the code-block indent does not apply to a lazy line)
+        // are stripped (the code-block indent does not apply to a lazy line).
+        // Append it to the last paragraph line so it stays paragraph text
+        // (a stripped "- bar" must not be re-parsed as a list item, cm-238).
         if (lastPara && !isBlockStart(bl)) {
-          bqLines.push(lineIndent(bl).col >= 4 ? stripIndent(bl, 4) : bl);
+          const stripped = lineIndent(bl).col >= 4 ? stripIndent(bl, 4) : bl;
+          if (bqLines.length > 0) bqLines[bqLines.length - 1] += '\n' + stripped;
+          else bqLines.push(stripped);
           j++; continue;
         }
         break;
@@ -1764,6 +1803,9 @@ function tableAlign(cell) {
 }
 
 function parseTable(lines, i, headerLine, refs) {
+  // the delimiter row must not be indented 4+ spaces (cm-087: "Foo\n
+  // ----" is a paragraph, not a table — the ---- is indented code/text)
+  if (lineIndent(lines[i]).col >= 4) return null;
   // header cells
   let h = headerLine.trim();
   if (h.charCodeAt(0) === 124) h = h.slice(1);
@@ -1823,6 +1865,9 @@ function parseList(lines, i, refs) {
   if (!first) return null;
   const listType = first.type;
   const marker = first.marker;
+  const baseIndent = lineIndent(lines[i]).col; // items of this list sit
+  // within 3 columns of the first item's indent (cm-312: a marker at
+  // indent 4+ is not a new item of this list)
   const items = [];
   let j = i;
   let loose = false;
@@ -1839,7 +1884,8 @@ function parseList(lines, i, refs) {
     }
     const m = listItemMatch(line);
     if (thematicBreak(line)) break; // a thematic break ends the list
-    if (m && m.type === listType && m.marker === marker) {
+    if (m && m.type === listType && m.marker === marker &&
+        lineIndent(line).col <= baseIndent + 3) {
       // a new item
       const item = { lines: [], contentIndent: m.contentIndent, task: null };
       let content = m.content;
@@ -1863,7 +1909,8 @@ function parseList(lines, i, refs) {
       while (k < lines.length && isBlank(lines[k])) k++;
       if (k >= lines.length) break;
       const nm = listItemMatch(lines[k]);
-      if (nm && nm.type === listType && nm.marker === marker) {
+      if (nm && nm.type === listType && nm.marker === marker &&
+          lineIndent(lines[k]).col <= baseIndent + 3) {
         loose = true;
         j = k;
         continue;
@@ -1890,8 +1937,12 @@ function parseList(lines, i, refs) {
       break;
     }
     if (endsOpenParaLines(cur.lines) && !isBlockStart(line)) {
-      // a lazy continuation line: 4+ spaces of indent lose 4 spaces
-      cur.lines.push(lineIndent(line).col >= 4 ? stripIndent(line, 4) : line);
+      // a lazy continuation line: 4+ spaces of indent lose 4 spaces.
+      // Append it to the last paragraph line so it stays paragraph text:
+      // a stripped "- e" must not be re-parsed as a new list item (cm-312).
+      const stripped = lineIndent(line).col >= 4 ? stripIndent(line, 4) : line;
+      if (cur.lines.length > 0) cur.lines[cur.lines.length - 1] += '\n' + stripped;
+      else cur.lines.push(stripped);
       j++;
       continue;
     }
